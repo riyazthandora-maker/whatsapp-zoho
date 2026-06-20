@@ -1,0 +1,15 @@
+node_modules/
+dist/
+.vercel/
+.vercel
+
+# All env files — .env.example is the only one safe to commit
+.env
+.env.*
+!.env.example
+
+# Generated output
+scripts/WhatsAppBot_UserGuide.pdf
+
+# Logs
+*.log

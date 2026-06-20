@@ -1,0 +1,14 @@
+{
+  "devCommand": null,
+  "functions": {
+    "api/*.ts": {
+      "maxDuration": 30
+    }
+  },
+  "crons": [
+    {
+      "path": "/api/sync-customers",
+      "schedule": "0 2 * * *"
+    }
+  ]
+}
