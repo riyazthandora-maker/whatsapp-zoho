@@ -36,6 +36,13 @@ CREATE TABLE IF NOT EXISTS audit_log (
   delivery_status  TEXT        NOT NULL DEFAULT 'pending' -- 'delivered' | 'failed'
 );
 
+-- ── Row-Level Security ────────────────────────────────────────────────────────
+-- All access goes through the service_role key (server-side only), which
+-- bypasses RLS. Enabling RLS with no public policies locks out the anon role.
+ALTER TABLE sales_reps     ENABLE ROW LEVEL SECURITY;
+ALTER TABLE zoho_customers ENABLE ROW LEVEL SECURITY;
+ALTER TABLE audit_log      ENABLE ROW LEVEL SECURITY;
+
 -- ── Sample: add your first sales rep ─────────────────────────────────────────
 -- INSERT INTO sales_reps (name, whatsapp_number, role)
 -- VALUES ('Riyaz', '+971501234567', 'admin');
