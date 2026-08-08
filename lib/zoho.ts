@@ -144,6 +144,71 @@ export async function getStatementPdf(contactId: string): Promise<Buffer | null>
   return Buffer.from(await res.arrayBuffer());
 }
 
+function diceSimilarity(a: string, b: string): number {
+  if (a === b) return 1;
+  if (a.length < 2 || b.length < 2) return 0;
+  const bigrams = (s: string) => {
+    const map = new Map<string, number>();
+    for (let i = 0; i < s.length - 1; i++) {
+      const bg = s.slice(i, i + 2);
+      map.set(bg, (map.get(bg) ?? 0) + 1);
+    }
+    return map;
+  };
+  const aMap = bigrams(a);
+  const bMap = bigrams(b);
+  let intersection = 0;
+  for (const [bg, count] of aMap) {
+    intersection += Math.min(count, bMap.get(bg) ?? 0);
+  }
+  return (2 * intersection) / (a.length - 1 + b.length - 1);
+}
+
+function itemMatchesQuery(itemName: string, query: string): boolean {
+  const name = itemName.toLowerCase();
+  const q = query.toLowerCase();
+  if (name.includes(q)) return true;
+  return name.split(/\s+/).some(word => diceSimilarity(word, q) >= 0.5);
+}
+
+export interface ZohoItem {
+  item_id: string;
+  name: string;
+  sku: string;
+  stock_on_hand: number | null;
+}
+
+export async function searchItems(query: string): Promise<ZohoItem[]> {
+  const token = await getAccessToken();
+  const qs = new URLSearchParams({
+    organization_id: ORG(),
+    search_text: query,
+    per_page: '200',
+  });
+
+  const res = await fetch(`${BASE()}/books/v3/items?${qs}`, {
+    headers: zohoHeaders(token),
+  });
+
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    throw new Error(`Zoho items API ${res.status}: ${body}`);
+  }
+
+  const data = (await res.json()) as any;
+  const raw: any[] = data.items ?? [];
+
+  return raw
+    .filter(item => itemMatchesQuery(item.name ?? '', query))
+    .map(item => ({
+      item_id: item.item_id,
+      name: item.name,
+      sku: item.sku ?? '',
+      stock_on_hand: item.stock_on_hand ?? null,
+    }))
+    .slice(0, 10);
+}
+
 export async function listContacts(page = 1): Promise<
   { contact_id: string; contact_name: string; email: string; phone: string }[]
 > {

@@ -10,7 +10,7 @@ import { getAuthorizedRep } from '../lib/auth';
 import { getSession, setSession, clearSession } from '../lib/session';
 import { parseIntent } from '../lib/gemini';
 import { findCustomers } from '../lib/customers';
-import { getContactSummary, getStatementPdf } from '../lib/zoho';
+import { getContactSummary, getStatementPdf, searchItems } from '../lib/zoho';
 import { logStatement } from '../lib/audit';
 import {
   parseAdminCommand,
@@ -95,6 +95,13 @@ async function dispatch(phone: string, text: string, session: Session, rep: Sale
     }
   }
 
+  // Stock command available to all authorized reps
+  const stockMatch = /^stock\s+(.+)/i.exec(text);
+  if (stockMatch) {
+    if (session.state !== 'idle') await clearSession(phone);
+    return handleStockCommand(phone, stockMatch[1].trim(), session.repName);
+  }
+
   switch (session.state) {
     case 'idle':
       return onIdle(phone, text, session);
@@ -118,6 +125,30 @@ async function handleAdminCommand(phone: string, cmd: ReturnType<typeof parseAdm
       return sendText(phone, await runSync());
     }
     case 'help': return sendText(phone, ADMIN_HELP);
+  }
+}
+
+async function handleStockCommand(phone: string, query: string, repName: string) {
+  await sendText(phone, `Searching stock for *"${query}"*...`);
+  try {
+    const items = await searchItems(query);
+    if (items.length === 0) {
+      await sendText(phone, `No products found matching *"${query}"*.`);
+      return;
+    }
+    const lines = items.map((item, i) => {
+      const qty = item.stock_on_hand !== null ? `${item.stock_on_hand} units` : 'N/A';
+      const flag = item.stock_on_hand === 0 ? ' ⚠️' : '';
+      return `${i + 1}. *${item.name}*\n   Stock: ${qty}${flag}`;
+    });
+    const count = items.length;
+    await sendText(
+      phone,
+      `📦 *Stock: "${query}"*\n\n${lines.join('\n\n')}\n\n_${count} product${count === 1 ? '' : 's'} found_`
+    );
+  } catch (err) {
+    console.error('[webhook] stock lookup error:', err);
+    await sendText(phone, 'Could not fetch stock data. Please try again.');
   }
 }
 
