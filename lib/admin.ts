@@ -139,4 +139,7 @@ export const ADMIN_HELP =
   `• \`list reps\` — Show all reps\n` +
   `• \`audit [N]\` — Last N requests (default 10)\n` +
   `• \`sync\` — Refresh Zoho customer list now\n\n` +
-  `For statements, use the same format as reps.`;
+  `*Rep Commands*\n\n` +
+  `• \`Stock <product>\` — Show stock for matching products\n` +
+  `• _"Statement for Gulf Trading"_ — Send customer statement\n` +
+  `• _"Balance for Acme Corp"_ — Same as above`;

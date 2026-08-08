@@ -160,9 +160,12 @@ async function onIdle(phone: string, text: string, session: Session) {
   if (intent.intent !== 'get_statement') {
     await sendText(
       phone,
-      `Hi ${session.repName}! I send customer account statements.\n\n` +
-        `Try: _"Statement for Gulf Trading"_\n` +
-        `or: _"Balance for Acme Corp"_`
+      `Hi ${session.repName}! Here's what I can do:\n\n` +
+        `📦 *Stock lookup*\n` +
+        `\`Stock <product>\` — e.g. _"Stock cement"_\n\n` +
+        `📄 *Customer statement*\n` +
+        `_"Statement for Gulf Trading"_\n` +
+        `_"Balance for Acme Corp"_`
     );
     return;
   }
