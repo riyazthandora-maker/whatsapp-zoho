@@ -12,6 +12,12 @@ import type { CommitmentRecord } from '../types';
 
 const COMPANY = () => process.env.COMPANY_NAME || 'Our Company';
 
+// Testing filter — clear this array to run for all customers
+const TEST_CUSTOMERS = [
+  'FAVOURITE BUILDING MATERIAL LLC',
+  'HABSHAN ELECT.&SANITARY WARE TR.',
+];
+
 const fmtAmount = (n: number) =>
   n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
@@ -60,9 +66,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
 
-  const dryRun = req.query.dry_run === 'true';
-  const customerFilter = req.query.customers
-    ? (req.query.customers as string).split(',').map(s => s.trim().toUpperCase())
+  const dryRun = false;
+  const customerFilter = TEST_CUSTOMERS.length > 0
+    ? TEST_CUSTOMERS.map(s => s.toUpperCase())
     : null;
   const t0 = Date.now();
   const repId = await getDefaultRepId();
