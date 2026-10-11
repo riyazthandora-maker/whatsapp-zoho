@@ -31,8 +31,8 @@ function invoiceList(invoices: { invoice_number: string }[]): string {
   return invoices.slice(0, 3).map(i => i.invoice_number).join(', ') + '...';
 }
 
-function groupByContact(invoices: OverdueInvoice[]): Map<string, OverdueInvoice[]> {
-  const map = new Map<string, OverdueInvoice[]>();
+function groupByContact<T extends { contact_id: string }>(invoices: T[]): Map<string, T[]> {
+  const map = new Map<string, T[]>();
   for (const inv of invoices) {
     if (!map.has(inv.contact_id)) map.set(inv.contact_id, []);
     map.get(inv.contact_id)!.push(inv);
@@ -95,80 +95,46 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const errors: string[] = [];
   const preview: string[] = [];
 
-  // ── Step 1: Advance notice (due in 7 days) ────────────────────────────────
+  // ── Steps 1 & 2: One message per customer across advance + overdue ───────────
   try {
-    console.log('[send-dunning] fetching upcoming invoices...');
-    const upcoming = await getUpcomingDueInvoices(7);
-    const filteredUpcoming = customerFilter
-      ? upcoming.filter(i => customerFilter.includes(i.customer_name.toUpperCase()))
-      : upcoming;
-    console.log(`[send-dunning] upcoming=${upcoming.length} filtered=${filteredUpcoming.length}`);
+    console.log('[send-dunning] fetching upcoming and overdue invoices...');
+    const [upcoming, overdue] = await Promise.all([
+      getUpcomingDueInvoices(7),
+      getOverdueInvoices(),
+    ]);
 
-    const commitments = await getCommitmentsByInvoices(filteredUpcoming.map(i => i.invoice_number));
-    const phones = await getPhonesByContactIds(filteredUpcoming.map(i => i.contact_id));
+    type Tagged = OverdueInvoice & { isOverdue: boolean };
+    const filter = (list: OverdueInvoice[]) => customerFilter
+      ? list.filter(i => customerFilter.includes(i.customer_name.toUpperCase()))
+      : list;
 
-    for (const [, group] of groupByContact(filteredUpcoming)) {
+    // Merge, deduplicating by invoice_number — overdue wins over advance
+    const invoiceMap = new Map<string, Tagged>();
+    for (const inv of filter(upcoming)) invoiceMap.set(inv.invoice_number, { ...inv, isOverdue: false });
+    for (const inv of filter(overdue))  invoiceMap.set(inv.invoice_number, { ...inv, isOverdue: true });
+    const allInvoices = [...invoiceMap.values()];
+
+    console.log(`[send-dunning] upcoming=${upcoming.length} overdue=${overdue.length} merged=${allInvoices.length}`);
+
+    const commitments = await getCommitmentsByInvoices(allInvoices.map(i => i.invoice_number));
+    const phones = await getPhonesByContactIds(allInvoices.map(i => i.contact_id));
+
+    for (const [, group] of groupByContact(allInvoices)) {
       try {
-        const newInvoices = group.filter(i => !commitments.has(i.invoice_number));
-        if (!newInvoices.length) continue;
-        const phone = phones.get(newInvoices[0].contact_id);
-        if (!phone) continue;
-
-        const total = newInvoices.reduce((s, i) => s + i.balance, 0);
-        const invStr = invoiceList(newInvoices);
-        const earliestDue = newInvoices.reduce((a, b) => a.due_date < b.due_date ? a : b).due_date;
-
-        if (!dryRun) {
-          for (const inv of newInvoices) {
-            await createCommitment({
-              customer_zoho_id: inv.contact_id,
-              customer_name: inv.customer_name,
-              customer_phone: phone,
-              invoice_number: inv.invoice_number,
-              amount: inv.balance,
-              assigned_rep_id: repId,
-              template_step: 1,
-            });
-          }
-          await sendTemplate(phone, 'payment_advance_notice', 'en', [
-            newInvoices[0].customer_name,
-            invStr,
-            fmtAmount(total),
-            fmtDate(earliestDue),
-            COMPANY(),
-          ]);
-        }
-        preview.push(`[advance] ${newInvoices[0].customer_name} | ${invStr} | AED ${fmtAmount(total)} → ${phone}`);
-        sent++;
-      } catch (err: any) {
-        errors.push(`advance/${group[0].contact_id}: ${err?.message}`);
-      }
-    }
-  } catch (err: any) {
-    errors.push(`advance-fetch: ${err?.message}`);
-  }
-
-  // ── Step 2: Start overdue dunning ─────────────────────────────────────────
-  try {
-    console.log('[send-dunning] fetching overdue invoices...');
-    const overdue = await getOverdueInvoices();
-    const filteredOverdue = customerFilter
-      ? overdue.filter(i => customerFilter.includes(i.customer_name.toUpperCase()))
-      : overdue;
-    console.log(`[send-dunning] overdue=${overdue.length} filtered=${filteredOverdue.length}`);
-
-    const commitments = await getCommitmentsByInvoices(filteredOverdue.map(i => i.invoice_number));
-    const phones = await getPhonesByContactIds(filteredOverdue.map(i => i.contact_id));
-
-    for (const [, group] of groupByContact(filteredOverdue)) {
-      try {
-        const actionable = group.filter(i => {
-          const c = commitments.get(i.invoice_number);
-          return !c || c.template_step < 2;
+        // Only invoices not yet processed at the correct step
+        const actionable = group.filter(inv => {
+          const c = commitments.get(inv.invoice_number);
+          return !c || c.template_step < (inv.isOverdue ? 2 : 1);
         });
         if (!actionable.length) continue;
+
         const phone = phones.get(actionable[0].contact_id);
         if (!phone) continue;
+
+        // If any invoice in this customer's batch is overdue → use overdue template
+        const hasOverdue = actionable.some(i => i.isOverdue);
+        const template = hasOverdue ? 'payment_overdue_collect' : 'payment_advance_notice';
+        const step = hasOverdue ? 2 : 1;
 
         const total = actionable.reduce((s, i) => s + i.balance, 0);
         const invStr = invoiceList(actionable);
@@ -179,7 +145,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             const existing = commitments.get(inv.invoice_number);
             if (existing) {
               await updateCommitment(existing.id, {
-                template_step: 2,
+                template_step: step,
                 template_sent_at: new Date().toISOString(),
               });
             } else {
@@ -190,11 +156,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 invoice_number: inv.invoice_number,
                 amount: inv.balance,
                 assigned_rep_id: repId,
-                template_step: 2,
+                template_step: step,
               });
             }
           }
-          await sendTemplate(phone, 'payment_overdue_collect', 'en', [
+          await sendTemplate(phone, template, 'en', [
             actionable[0].customer_name,
             invStr,
             fmtAmount(total),
@@ -202,14 +168,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             COMPANY(),
           ]);
         }
-        preview.push(`[overdue] ${actionable[0].customer_name} | ${invStr} | AED ${fmtAmount(total)} → ${phone}`);
+        preview.push(`[${hasOverdue ? 'overdue' : 'advance'}] ${actionable[0].customer_name} | ${invStr} | AED ${fmtAmount(total)} → ${phone}`);
         sent++;
       } catch (err: any) {
-        errors.push(`overdue/${group[0].contact_id}: ${err?.message}`);
+        errors.push(`outreach/${group[0].contact_id}: ${err?.message}`);
       }
     }
   } catch (err: any) {
-    errors.push(`overdue-fetch: ${err?.message}`);
+    errors.push(`outreach-fetch: ${err?.message}`);
   }
 
   // ── Step 3: Follow-up (step 2, no reply in 24h) ───────────────────────────
