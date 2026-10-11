@@ -113,8 +113,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const filteredUpcoming = customerFilter
       ? upcoming.filter(i => customerFilter.includes(i.customer_name.toUpperCase()))
             .filter(i => !overdueCustomerNames.has(i.customer_name.trim().toUpperCase()))
-      : upcoming.filter(i => !overdueCustomerNames.has(i.customer_name.trim().toUpperCase()))
-      : upcoming;
+      : upcoming.filter(i => !overdueCustomerNames.has(i.customer_name.trim().toUpperCase()));
     console.log(`[send-dunning] upcoming=${upcoming.length} filtered=${filteredUpcoming.length}`);
 
     const upcomingCommitments = await getCommitmentsByInvoices(filteredUpcoming.map(i => i.invoice_number));
