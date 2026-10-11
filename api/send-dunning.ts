@@ -31,11 +31,12 @@ function invoiceList(invoices: { invoice_number: string }[]): string {
   return invoices.slice(0, 3).map(i => i.invoice_number).join(', ') + '...';
 }
 
-function groupByContact<T extends { contact_id: string }>(invoices: T[]): Map<string, T[]> {
+function groupByCustomer<T extends { customer_name: string }>(invoices: T[]): Map<string, T[]> {
   const map = new Map<string, T[]>();
   for (const inv of invoices) {
-    if (!map.has(inv.contact_id)) map.set(inv.contact_id, []);
-    map.get(inv.contact_id)!.push(inv);
+    const key = inv.customer_name.trim().toUpperCase();
+    if (!map.has(key)) map.set(key, []);
+    map.get(key)!.push(inv);
   }
   return map;
 }
@@ -107,7 +108,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const upcomingCommitments = await getCommitmentsByInvoices(filteredUpcoming.map(i => i.invoice_number));
     const upcomingPhones = await getPhonesByContactIds(filteredUpcoming.map(i => i.contact_id));
 
-    for (const [, group] of groupByContact(filteredUpcoming)) {
+    for (const [, group] of groupByCustomer(filteredUpcoming)) {
       try {
         const newInvoices = group.filter(i => !upcomingCommitments.has(i.invoice_number));
         if (!newInvoices.length) continue;
@@ -160,7 +161,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const overdueCommitments = await getCommitmentsByInvoices(filteredOverdue.map(i => i.invoice_number));
     const overduePhones = await getPhonesByContactIds(filteredOverdue.map(i => i.contact_id));
 
-    for (const [, group] of groupByContact(filteredOverdue)) {
+    for (const [, group] of groupByCustomer(filteredOverdue)) {
       try {
         const actionable = group.filter(i => {
           const c = overdueCommitments.get(i.invoice_number);
