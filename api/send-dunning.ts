@@ -96,12 +96,24 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const errors: string[] = [];
   const preview: string[] = [];
 
-  // ── Step 1: Advance notice (due in 7 days) — one message per customer ────────
+  // Pre-fetch overdue customers so advance step can skip them
+  let overdueCustomerNames = new Set<string>();
+  try {
+    const overdueAll = await getOverdueInvoices();
+    const filteredOD = customerFilter
+      ? overdueAll.filter(i => customerFilter.includes(i.customer_name.toUpperCase()))
+      : overdueAll;
+    filteredOD.forEach(i => overdueCustomerNames.add(i.customer_name.trim().toUpperCase()));
+  } catch { /* non-fatal — advance step will just send to everyone */ }
+
+  // ── Step 1: Advance notice (due in 7 days) — skip customers who have overdue ─
   try {
     console.log('[send-dunning] fetching upcoming invoices...');
     const upcoming = await getUpcomingDueInvoices(7);
     const filteredUpcoming = customerFilter
       ? upcoming.filter(i => customerFilter.includes(i.customer_name.toUpperCase()))
+            .filter(i => !overdueCustomerNames.has(i.customer_name.trim().toUpperCase()))
+      : upcoming.filter(i => !overdueCustomerNames.has(i.customer_name.trim().toUpperCase()))
       : upcoming;
     console.log(`[send-dunning] upcoming=${upcoming.length} filtered=${filteredUpcoming.length}`);
 
@@ -156,6 +168,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const filteredOverdue = customerFilter
       ? overdue.filter(i => customerFilter.includes(i.customer_name.toUpperCase()))
       : overdue;
+    overdueCustomerNames = new Set(filteredOverdue.map(i => i.customer_name.trim().toUpperCase()));
     console.log(`[send-dunning] overdue=${overdue.length} filtered=${filteredOverdue.length}`);
 
     const overdueCommitments = await getCommitmentsByInvoices(filteredOverdue.map(i => i.invoice_number));
