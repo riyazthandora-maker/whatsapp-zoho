@@ -67,9 +67,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (!messages.length) return res.status(200).end();
 
   const message = messages[0];
+  const phone = message.from;
+
+  // Voice/audio message — notify dunning customers, ignore everyone else
+  if (message.type === 'audio') {
+    const normPhone = normalizePhone(phone);
+    const dunningSession = await getDunningSession(normPhone);
+    const pending = dunningSession ? true : (await getCommitmentsByPhone(normPhone)).length > 0;
+    if (pending) {
+      await sendText(phone, "We don't listen to voice messages. Please type your reply.");
+    }
+    return res.status(200).end();
+  }
+
   if (message.type !== 'text' && message.type !== 'button') return res.status(200).end();
 
-  const phone = message.from;
   const text =
     message.type === 'button'
       ? (message.button?.text ?? '')

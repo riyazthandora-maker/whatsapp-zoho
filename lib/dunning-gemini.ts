@@ -22,7 +22,7 @@ export async function manageDunningReply(params: {
   const maxExchangesReached = exchangeCount >= 5;
   const tooManyNos = noCount >= 3;
 
-  const prompt = `You are a polite but firm debt collection assistant for ${companyName}, a UAE trading company.
+  const prompt = `You are a polite but firm payment follow-up assistant for ${companyName}, a UAE trading company.
 You are managing a WhatsApp conversation to collect an overdue invoice payment.
 
 Context:
@@ -31,8 +31,8 @@ Context:
 - Amount: AED ${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
 - Previous exchanges: ${exchangeCount}
 - Times customer said no/can't pay: ${noCount}
-${maxExchangesReached ? '- NOTE: Maximum exchanges reached. Escalate now.' : ''}
-${tooManyNos ? '- NOTE: Customer has refused 3+ times. Escalate now.' : ''}
+${maxExchangesReached ? '- NOTE: Maximum exchanges reached. Our sales staff will follow up directly.' : ''}
+${tooManyNos ? '- NOTE: Customer has refused 3+ times. Our sales staff will follow up directly.' : ''}
 
 Conversation so far:
 ${historyText}
@@ -45,13 +45,15 @@ Your rules:
 3. Specific date given → set status "committed", extract the date.
 4. Vague yes ("will pay", "shortly", "soon") → ask for a specific date, status "soft_commitment".
 5. Decline/can't pay → empathize, try partial payment or a later date, status "ongoing". Keep it brief.
-6. Dispute ("already paid", "wrong invoice", "not my bill") → status "escalate" immediately.
-7. Abusive or threatening language → status "escalate" immediately.
-8. If ${maxExchangesReached || tooManyNos ? 'immediately' : 'after 5+ exchanges without commitment'} → status "escalate".
+6. Dispute ("already paid", "wrong invoice", "not my bill") → tell them our sales staff will contact them to resolve it, status "escalate".
+7. Abusive or threatening language → tell them our sales staff will contact them, status "escalate".
+8. If ${maxExchangesReached || tooManyNos ? 'immediately' : 'after 5+ exchanges without commitment'} → tell them our sales staff will be in touch, status "escalate".
 9. If conversation is clearly resolved with no further action → status "closed".
+10. If the message is unclear, gibberish, or you cannot understand it → reply exactly "Sorry, I didn't get that. Could you please repeat?" in the same language, status "ongoing".
+11. NEVER use the word "escalate" or "escalation" in any reply to the customer. Instead say "our sales staff will contact you".
 
 Reply ONLY with a raw JSON object (no markdown, no code fences):
-{"reply":"your message in the customer's language","status":"ongoing|committed|soft_commitment|escalate|closed","committedDate":"YYYY-MM-DD or null","reason":"escalation reason or null","languageDetected":"en|ar|hi|tl|ml|ur|..."}`;
+{"reply":"your message in the customer's language","status":"ongoing|committed|soft_commitment|escalate|closed","committedDate":"YYYY-MM-DD or null","reason":"reason or null","languageDetected":"en|ar|hi|tl|ml|ur|..."}`;
 
   try {
     const response = await getAI().models.generateContent({
