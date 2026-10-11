@@ -1,6 +1,6 @@
 import { supabase } from './supabase';
 import { syncCustomers } from './sync';
-import { getAllOpenTasks } from './dunning';
+import { getAllOpenTasks, getOpenTasksByRepName } from './dunning';
 
 export type AdminCommand =
   | { type: 'add_rep'; name: string; phone: string }
@@ -9,6 +9,7 @@ export type AdminCommand =
   | { type: 'audit'; limit: number }
   | { type: 'sync' }
   | { type: 'tasks' }
+  | { type: 'tasks_of'; name: string }
   | { type: 'help' }
   | { type: 'unknown' };
 
@@ -39,6 +40,8 @@ export function parseAdminCommand(text: string): AdminCommand {
   }
 
   if (/^sync$/i.test(t)) return { type: 'sync' };
+  const tasksOfMatch = t.match(/^tasks\s+of\s+(.+)$/i);
+  if (tasksOfMatch) return { type: 'tasks_of', name: tasksOfMatch[1].trim() };
   if (/^tasks$/i.test(t)) return { type: 'tasks' };
   if (/^(admin\s+)?help$/i.test(t)) return { type: 'help' };
 
@@ -135,26 +138,41 @@ export async function runSync(): Promise<string> {
   }
 }
 
-export async function getAdminTasks(): Promise<string> {
-  const tasks = await getAllOpenTasks();
-  if (!tasks.length) return 'No open tasks across all reps. 🎉';
+const fmtAED = (n: number) =>
+  `AED ${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+const taskIcon = (t: string) => t === 'collection' ? '📞' : t === 'escalation' ? '🚨' : '🔔';
+const taskLabel = (t: string) => t === 'collection' ? 'Collect' : t === 'escalation' ? 'Escalation' : 'Follow up';
 
-  const fmtAED = (n: number) =>
-    `AED ${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-  const icon = (t: string) => t === 'collection' ? '📞' : t === 'escalation' ? '🚨' : '🔔';
-  const label = (t: string) => t === 'collection' ? 'Collect' : t === 'escalation' ? 'Escalation' : 'Follow up';
-
-  const lines = tasks.map((t, i) => {
+function formatTaskLines(tasks: Awaited<ReturnType<typeof getAllOpenTasks>>, startIndex = 0): string {
+  return tasks.map((t, i) => {
     const due = t.due_date
       ? ` | ${new Date(t.due_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })}`
       : '';
-    return `${i + 1}. ${icon(t.task_type)} *${label(t.task_type)}* — ${t.customer_name}\n   ${t.invoice_number} | ${fmtAED(t.amount)}${due}`;
-  });
+    return `${startIndex + i + 1}. ${taskIcon(t.task_type)} *${taskLabel(t.task_type)}* — ${t.customer_name}\n   ${t.invoice_number} | ${fmtAED(t.amount)}${due}`;
+  }).join('\n\n');
+}
+
+export async function getAdminTasks(): Promise<string> {
+  const tasks = await getAllOpenTasks(25);
+  if (!tasks.length) return 'No open tasks across all reps. 🎉';
 
   const total = tasks.reduce((sum, t) => sum + Number(t.amount), 0);
   return (
     `*All Open Tasks (${tasks.length})*\n\n` +
-    `${lines.join('\n\n')}\n\n` +
+    `${formatTaskLines(tasks)}\n\n` +
+    `_Total exposure: ${fmtAED(total)}_`
+  );
+}
+
+export async function getAdminTasksForRep(name: string): Promise<string> {
+  const { tasks, repName } = await getOpenTasksByRepName(name);
+  if (!repName) return `No active rep found matching *"${name}"*.`;
+  if (!tasks.length) return `No open tasks for *${repName}*. 🎉`;
+
+  const total = tasks.reduce((sum, t) => sum + Number(t.amount), 0);
+  return (
+    `*Tasks for ${repName} (${tasks.length})*\n\n` +
+    `${formatTaskLines(tasks)}\n\n` +
     `_Total exposure: ${fmtAED(total)}_`
   );
 }
@@ -166,7 +184,8 @@ export const ADMIN_HELP =
   `• \`list reps\` — Show all reps\n` +
   `• \`audit [N]\` — Last N requests (default 10)\n` +
   `• \`sync\` — Refresh Zoho customer list now\n` +
-  `• \`tasks\` — View all open collection tasks\n\n` +
+  `• \`tasks\` — View all open collection tasks (max 25)\n` +
+  `• \`tasks of <name>\` — View tasks for a specific rep\n\n` +
   `*Rep Commands*\n\n` +
   `• \`Stock <product>\` — Show stock for matching products\n` +
   `• \`TASKS\` — View your open tasks\n` +

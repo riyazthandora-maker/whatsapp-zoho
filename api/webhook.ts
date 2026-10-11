@@ -20,6 +20,7 @@ import {
   getRecentAudit,
   runSync,
   getAdminTasks,
+  getAdminTasksForRep,
   ADMIN_HELP,
 } from '../lib/admin';
 import {
@@ -191,6 +192,7 @@ async function handleAdminCommand(phone: string, cmd: ReturnType<typeof parseAdm
     case 'list_reps': return sendText(phone, await listReps());
     case 'audit':     return sendText(phone, await getRecentAudit(cmd.limit));
     case 'tasks':     return sendText(phone, await getAdminTasks());
+    case 'tasks_of':  return sendText(phone, await getAdminTasksForRep(cmd.name));
     case 'sync': {
       await sendText(phone, 'Syncing customers from Zoho...');
       return sendText(phone, await runSync());

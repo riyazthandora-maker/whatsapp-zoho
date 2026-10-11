@@ -186,13 +186,31 @@ export async function getOpenRepTasks(repId: string): Promise<RepTask[]> {
   return (data ?? []) as RepTask[];
 }
 
-export async function getAllOpenTasks(): Promise<RepTask[]> {
-  const { data } = await supabase
+export async function getAllOpenTasks(limit = 0): Promise<RepTask[]> {
+  let q = supabase
     .from('rep_tasks')
     .select('*')
     .eq('status', 'open')
     .order('created_at', { ascending: true });
+  if (limit > 0) q = q.limit(limit);
+  const { data } = await q;
   return (data ?? []) as RepTask[];
+}
+
+export async function getOpenTasksByRepName(
+  name: string
+): Promise<{ tasks: RepTask[]; repName: string | null }> {
+  const { data: rep } = await supabase
+    .from('sales_reps')
+    .select('id, name')
+    .ilike('name', `%${name}%`)
+    .eq('is_active', true)
+    .limit(1)
+    .maybeSingle();
+  if (!rep) return { tasks: [], repName: null };
+  const r = rep as { id: string; name: string };
+  const tasks = await getOpenRepTasks(r.id);
+  return { tasks, repName: r.name };
 }
 
 export async function updateRepTask(taskId: string, updates: Partial<RepTask>): Promise<void> {
