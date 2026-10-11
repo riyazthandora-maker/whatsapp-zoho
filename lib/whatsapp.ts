@@ -73,6 +73,34 @@ export async function uploadMedia(
   return data.id;
 }
 
+export async function sendTemplate(
+  to: string,
+  templateName: string,
+  languageCode: string,
+  parameters: string[]
+): Promise<void> {
+  const res = await fetch(`${GRAPH_API}/${PHONE_ID()}/messages`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify({
+      messaging_product: 'whatsapp',
+      to,
+      type: 'template',
+      template: {
+        name: templateName,
+        language: { code: languageCode },
+        components: parameters.length
+          ? [{ type: 'body', parameters: parameters.map(p => ({ type: 'text', text: p })) }]
+          : [],
+      },
+    }),
+  });
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '');
+    console.error(`[whatsapp] sendTemplate failed ${res.status}: ${detail}`);
+  }
+}
+
 export async function markAsRead(messageId: string): Promise<void> {
   const res = await fetch(`${GRAPH_API}/${PHONE_ID()}/messages`, {
     method: 'POST',

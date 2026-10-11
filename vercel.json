@@ -9,6 +9,14 @@
     {
       "path": "/api/sync-customers",
       "schedule": "0 2 * * *"
+    },
+    {
+      "path": "/api/send-dunning",
+      "schedule": "0 4 * * *"
+    },
+    {
+      "path": "/api/morning-digest",
+      "schedule": "0 5 * * *"
     }
   ]
 }

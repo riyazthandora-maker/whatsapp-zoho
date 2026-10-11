@@ -13,3 +13,6 @@ scripts/WhatsAppBot_UserGuide.pdf
 
 # Logs
 *.log
+
+# Claude Code memory
+.claude/

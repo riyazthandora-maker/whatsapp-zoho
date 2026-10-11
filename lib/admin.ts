@@ -1,5 +1,6 @@
 import { supabase } from './supabase';
 import { syncCustomers } from './sync';
+import { getAllOpenTasks } from './dunning';
 
 export type AdminCommand =
   | { type: 'add_rep'; name: string; phone: string }
@@ -7,6 +8,7 @@ export type AdminCommand =
   | { type: 'list_reps' }
   | { type: 'audit'; limit: number }
   | { type: 'sync' }
+  | { type: 'tasks' }
   | { type: 'help' }
   | { type: 'unknown' };
 
@@ -37,6 +39,7 @@ export function parseAdminCommand(text: string): AdminCommand {
   }
 
   if (/^sync$/i.test(t)) return { type: 'sync' };
+  if (/^tasks$/i.test(t)) return { type: 'tasks' };
   if (/^(admin\s+)?help$/i.test(t)) return { type: 'help' };
 
   return { type: 'unknown' };
@@ -132,14 +135,43 @@ export async function runSync(): Promise<string> {
   }
 }
 
+export async function getAdminTasks(): Promise<string> {
+  const tasks = await getAllOpenTasks();
+  if (!tasks.length) return 'No open tasks across all reps. 🎉';
+
+  const fmtAED = (n: number) =>
+    `AED ${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const icon = (t: string) => t === 'collection' ? '📞' : t === 'escalation' ? '🚨' : '🔔';
+  const label = (t: string) => t === 'collection' ? 'Collect' : t === 'escalation' ? 'Escalation' : 'Follow up';
+
+  const lines = tasks.map((t, i) => {
+    const due = t.due_date
+      ? ` | ${new Date(t.due_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })}`
+      : '';
+    return `${i + 1}. ${icon(t.task_type)} *${label(t.task_type)}* — ${t.customer_name}\n   ${t.invoice_number} | ${fmtAED(t.amount)}${due}`;
+  });
+
+  const total = tasks.reduce((sum, t) => sum + Number(t.amount), 0);
+  return (
+    `*All Open Tasks (${tasks.length})*\n\n` +
+    `${lines.join('\n\n')}\n\n` +
+    `_Total exposure: ${fmtAED(total)}_`
+  );
+}
+
 export const ADMIN_HELP =
   `*Admin Commands*\n\n` +
   `• \`add rep <Name>, <+phone>\` — Register a new rep\n` +
   `• \`remove rep <+phone>\` — Deactivate a rep\n` +
   `• \`list reps\` — Show all reps\n` +
   `• \`audit [N]\` — Last N requests (default 10)\n` +
-  `• \`sync\` — Refresh Zoho customer list now\n\n` +
+  `• \`sync\` — Refresh Zoho customer list now\n` +
+  `• \`tasks\` — View all open collection tasks\n\n` +
   `*Rep Commands*\n\n` +
   `• \`Stock <product>\` — Show stock for matching products\n` +
-  `• _"Statement for Gulf Trading"_ — Send customer statement\n` +
-  `• _"Balance for Acme Corp"_ — Same as above`;
+  `• \`TASKS\` — View your open tasks\n` +
+  `• \`DONE N\` — Mark task N as collected\n` +
+  `• \`BROKEN N\` — Mark task N as broken commitment\n` +
+  `• \`CALL N\` — Log a call attempt on task N\n` +
+  `• \`NOTE N <text>\` — Add a note to task N\n` +
+  `• _"Statement for Gulf Trading"_ — Send customer statement`;

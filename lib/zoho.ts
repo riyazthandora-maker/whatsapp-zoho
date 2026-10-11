@@ -209,6 +209,81 @@ export async function searchItems(query: string): Promise<ZohoItem[]> {
     .slice(0, 10);
 }
 
+export interface OverdueInvoice {
+  invoice_id: string;
+  invoice_number: string;
+  contact_id: string;
+  customer_name: string;
+  due_date: string;
+  balance: number;
+  currency_symbol: string;
+}
+
+export async function getOverdueInvoices(): Promise<OverdueInvoice[]> {
+  const token = await getAccessToken();
+  const qs = new URLSearchParams({
+    organization_id: ORG(),
+    status: 'overdue',
+    per_page: '200',
+  });
+
+  const res = await fetch(`${BASE()}/books/v3/invoices?${qs}`, {
+    headers: zohoHeaders(token),
+  });
+
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    throw new Error(`Zoho overdue invoices ${res.status}: ${body}`);
+  }
+
+  const data = (await res.json()) as any;
+  return ((data.invoices ?? []) as any[])
+    .filter(inv => (inv.balance ?? 0) > 0)
+    .map(inv => ({
+      invoice_id: inv.invoice_id,
+      invoice_number: inv.invoice_number,
+      contact_id: inv.contact_id ?? inv.customer_id,
+      customer_name: inv.customer_name,
+      due_date: inv.due_date,
+      balance: inv.balance ?? 0,
+      currency_symbol: inv.currency_symbol ?? 'AED ',
+    }));
+}
+
+export async function getUpcomingDueInvoices(daysFromNow: number): Promise<OverdueInvoice[]> {
+  const token = await getAccessToken();
+  const target = new Date();
+  target.setDate(target.getDate() + daysFromNow);
+  const dateStr = target.toISOString().split('T')[0];
+
+  const qs = new URLSearchParams({
+    organization_id: ORG(),
+    status: 'sent',
+    due_date_start: dateStr,
+    due_date_end: dateStr,
+    per_page: '200',
+  });
+
+  const res = await fetch(`${BASE()}/books/v3/invoices?${qs}`, {
+    headers: zohoHeaders(token),
+  });
+
+  if (!res.ok) return [];
+
+  const data = (await res.json()) as any;
+  return ((data.invoices ?? []) as any[])
+    .filter(inv => (inv.balance ?? 0) > 0)
+    .map(inv => ({
+      invoice_id: inv.invoice_id,
+      invoice_number: inv.invoice_number,
+      contact_id: inv.contact_id ?? inv.customer_id,
+      customer_name: inv.customer_name,
+      due_date: inv.due_date,
+      balance: inv.balance ?? 0,
+      currency_symbol: inv.currency_symbol ?? 'AED ',
+    }));
+}
+
 export async function listContacts(page = 1): Promise<
   { contact_id: string; contact_name: string; email: string; phone: string }[]
 > {
