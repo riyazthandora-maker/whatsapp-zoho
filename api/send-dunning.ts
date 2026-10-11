@@ -1,12 +1,14 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { supabase } from '../lib/supabase';
 import { getOverdueInvoices, getUpcomingDueInvoices } from '../lib/zoho';
+import type { OverdueInvoice } from '../lib/zoho';
 import { sendTemplate } from '../lib/whatsapp';
 import {
   createCommitment,
   updateCommitment,
   getCommitmentsForFollowup,
   createRepTask,
+  normalizePhone,
 } from '../lib/dunning';
 import type { CommitmentRecord } from '../types';
 
@@ -23,6 +25,20 @@ const fmtAmount = (n: number) =>
 
 const fmtDate = (iso: string) =>
   new Date(iso).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+
+function invoiceList(invoices: { invoice_number: string }[]): string {
+  if (invoices.length <= 3) return invoices.map(i => i.invoice_number).join(', ');
+  return invoices.slice(0, 3).map(i => i.invoice_number).join(', ') + '...';
+}
+
+function groupByContact(invoices: OverdueInvoice[]): Map<string, OverdueInvoice[]> {
+  const map = new Map<string, OverdueInvoice[]>();
+  for (const inv of invoices) {
+    if (!map.has(inv.contact_id)) map.set(inv.contact_id, []);
+    map.get(inv.contact_id)!.push(inv);
+  }
+  return map;
+}
 
 async function getDefaultRepId(): Promise<string | null> {
   const phone = process.env.DUNNING_REP_PHONE;
@@ -56,7 +72,8 @@ async function getPhonesByContactIds(contactIds: string[]): Promise<Map<string, 
     .in('zoho_contact_id', contactIds);
   const map = new Map<string, string>();
   for (const row of (data ?? []) as { zoho_contact_id: string; phone: string }[]) {
-    if (row.phone?.trim()) map.set(row.zoho_contact_id, row.phone.trim());
+    const norm = normalizePhone(row.phone ?? '');
+    if (norm) map.set(row.zoho_contact_id, norm);
   }
   return map;
 }
@@ -90,34 +107,41 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const commitments = await getCommitmentsByInvoices(filteredUpcoming.map(i => i.invoice_number));
     const phones = await getPhonesByContactIds(filteredUpcoming.map(i => i.contact_id));
 
-    for (const inv of filteredUpcoming) {
+    for (const [, group] of groupByContact(filteredUpcoming)) {
       try {
-        if (commitments.has(inv.invoice_number)) continue;
-        const phone = phones.get(inv.contact_id);
+        const newInvoices = group.filter(i => !commitments.has(i.invoice_number));
+        if (!newInvoices.length) continue;
+        const phone = phones.get(newInvoices[0].contact_id);
         if (!phone) continue;
 
+        const total = newInvoices.reduce((s, i) => s + i.balance, 0);
+        const invStr = invoiceList(newInvoices);
+        const earliestDue = newInvoices.reduce((a, b) => a.due_date < b.due_date ? a : b).due_date;
+
         if (!dryRun) {
-          await createCommitment({
-            customer_zoho_id: inv.contact_id,
-            customer_name: inv.customer_name,
-            customer_phone: phone,
-            invoice_number: inv.invoice_number,
-            amount: inv.balance,
-            assigned_rep_id: repId,
-            template_step: 1,
-          });
+          for (const inv of newInvoices) {
+            await createCommitment({
+              customer_zoho_id: inv.contact_id,
+              customer_name: inv.customer_name,
+              customer_phone: phone,
+              invoice_number: inv.invoice_number,
+              amount: inv.balance,
+              assigned_rep_id: repId,
+              template_step: 1,
+            });
+          }
           await sendTemplate(phone, 'payment_advance_notice', 'en', [
-            inv.customer_name,
-            inv.invoice_number,
-            fmtAmount(inv.balance),
-            fmtDate(inv.due_date),
+            newInvoices[0].customer_name,
+            invStr,
+            fmtAmount(total),
+            fmtDate(earliestDue),
             COMPANY(),
           ]);
         }
-        preview.push(`[advance] ${inv.customer_name} ${inv.invoice_number} AED ${fmtAmount(inv.balance)} → ${phone}`);
+        preview.push(`[advance] ${newInvoices[0].customer_name} | ${invStr} | AED ${fmtAmount(total)} → ${phone}`);
         sent++;
       } catch (err: any) {
-        errors.push(`advance/${inv.invoice_number}: ${err?.message}`);
+        errors.push(`advance/${group[0].contact_id}: ${err?.message}`);
       }
     }
   } catch (err: any) {
@@ -136,43 +160,52 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const commitments = await getCommitmentsByInvoices(filteredOverdue.map(i => i.invoice_number));
     const phones = await getPhonesByContactIds(filteredOverdue.map(i => i.contact_id));
 
-    for (const inv of filteredOverdue) {
+    for (const [, group] of groupByContact(filteredOverdue)) {
       try {
-        const existing = commitments.get(inv.invoice_number);
-        if (existing && existing.template_step >= 2) continue;
-
-        const phone = phones.get(inv.contact_id);
+        const actionable = group.filter(i => {
+          const c = commitments.get(i.invoice_number);
+          return !c || c.template_step < 2;
+        });
+        if (!actionable.length) continue;
+        const phone = phones.get(actionable[0].contact_id);
         if (!phone) continue;
 
+        const total = actionable.reduce((s, i) => s + i.balance, 0);
+        const invStr = invoiceList(actionable);
+        const earliestDue = actionable.reduce((a, b) => a.due_date < b.due_date ? a : b).due_date;
+
         if (!dryRun) {
-          if (existing) {
-            await updateCommitment(existing.id, {
-              template_step: 2,
-              template_sent_at: new Date().toISOString(),
-            });
-          } else {
-            await createCommitment({
-              customer_zoho_id: inv.contact_id,
-              customer_name: inv.customer_name,
-              customer_phone: phone,
-              invoice_number: inv.invoice_number,
-              amount: inv.balance,
-              assigned_rep_id: repId,
-              template_step: 2,
-            });
+          for (const inv of actionable) {
+            const existing = commitments.get(inv.invoice_number);
+            if (existing) {
+              await updateCommitment(existing.id, {
+                template_step: 2,
+                template_sent_at: new Date().toISOString(),
+              });
+            } else {
+              await createCommitment({
+                customer_zoho_id: inv.contact_id,
+                customer_name: inv.customer_name,
+                customer_phone: phone,
+                invoice_number: inv.invoice_number,
+                amount: inv.balance,
+                assigned_rep_id: repId,
+                template_step: 2,
+              });
+            }
           }
           await sendTemplate(phone, 'payment_overdue_collect', 'en', [
-            inv.customer_name,
-            inv.invoice_number,
-            fmtAmount(inv.balance),
-            fmtDate(inv.due_date),
+            actionable[0].customer_name,
+            invStr,
+            fmtAmount(total),
+            fmtDate(earliestDue),
             COMPANY(),
           ]);
         }
-        preview.push(`[overdue] ${inv.customer_name} ${inv.invoice_number} AED ${fmtAmount(inv.balance)} → ${phone}`);
+        preview.push(`[overdue] ${actionable[0].customer_name} | ${invStr} | AED ${fmtAmount(total)} → ${phone}`);
         sent++;
       } catch (err: any) {
-        errors.push(`overdue/${inv.invoice_number}: ${err?.message}`);
+        errors.push(`overdue/${group[0].contact_id}: ${err?.message}`);
       }
     }
   } catch (err: any) {

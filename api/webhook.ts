@@ -38,6 +38,7 @@ import {
   getTaskList,
   setTaskList,
   updateRepTask,
+  normalizePhone,
 } from '../lib/dunning';
 import { manageDunningReply } from '../lib/dunning-gemini';
 import type {
@@ -84,21 +85,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const rep = await getAuthorizedRep(phone);
 
     if (!rep) {
+      const normPhone = normalizePhone(phone);
+
       // Check for active dunning AI conversation (Redis session exists)
-      const dunningSession = await getDunningSession(phone);
+      const dunningSession = await getDunningSession(normPhone);
       if (dunningSession) {
-        await handleDunningReply(phone, text, dunningSession);
+        await handleDunningReply(normPhone, text, dunningSession);
         return res.status(200).end();
       }
 
       // Check for first reply to a dunning template (no Redis session yet)
-      const pendingCommitments = await getCommitmentsByPhone(phone);
+      const pendingCommitments = await getCommitmentsByPhone(normPhone);
       if (pendingCommitments.length > 0) {
         const freshSession: DunningSessionData = {
           commitmentId: pendingCommitments[0].id,
           exchangeCount: 0,
         };
-        await handleDunningReply(phone, text, freshSession);
+        await handleDunningReply(normPhone, text, freshSession);
         return res.status(200).end();
       }
 
@@ -328,15 +331,23 @@ async function handleDunningReply(
     });
   }
 
+  // Fetch all pending commitments for this phone for consolidated context
+  const allCommitments = await getCommitmentsByPhone(phone);
+  const totalAmount = allCommitments.reduce((s, c) => s + Number(c.amount), 0) || commitment.amount;
+  const allInvoices = allCommitments.map(c => c.invoice_number);
+  const invoiceStr = allInvoices.length > 3
+    ? allInvoices.slice(0, 3).join(', ') + '...'
+    : allInvoices.join(', ') || commitment.invoice_number;
+
   // Load full conversation history (minus the message we just saved — pass it as latestMessage)
   const history = await getConversationHistory(commitmentId);
 
   const aiResult = await manageDunningReply({
     customerName: commitment.customer_name,
-    invoiceNumber: commitment.invoice_number,
-    amount: commitment.amount,
+    invoiceNumber: invoiceStr,
+    amount: totalAmount,
     companyName: process.env.COMPANY_NAME || 'Our Company',
-    history: history.slice(0, -1), // exclude the message just saved
+    history: history.slice(0, -1),
     latestMessage: text,
     exchangeCount,
     noCount: commitment.no_count,

@@ -42,6 +42,12 @@ export async function getTaskList(phone: string): Promise<string[] | null> {
   return getRedis().get<string[]>(TASKLIST_KEY(phone));
 }
 
+// ── Phone normalization ───────────────────────────────────────────────────────
+
+export function normalizePhone(phone: string): string {
+  return phone.replace(/\D/g, '');
+}
+
 // ── Collection commitments (Supabase) ─────────────────────────────────────────
 
 export async function getCommitmentById(id: string): Promise<CommitmentRecord | null> {
@@ -63,13 +69,13 @@ export async function getCommitmentByInvoice(invoiceNumber: string): Promise<Com
 }
 
 export async function getCommitmentsByPhone(phone: string): Promise<CommitmentRecord[]> {
+  const norm = normalizePhone(phone);
   const { data } = await supabase
     .from('collection_commitments')
     .select('*')
-    .eq('customer_phone', phone)
+    .eq('customer_phone', norm)
     .in('status', ['pending', 'negotiating', 'soft_commitment'])
-    .order('template_sent_at', { ascending: false })
-    .limit(1);
+    .order('created_at', { ascending: false });
   return (data ?? []) as CommitmentRecord[];
 }
 
