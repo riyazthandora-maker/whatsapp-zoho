@@ -209,7 +209,29 @@ type TaskCommand =
   | { type: 'broken'; index: number }
   | { type: 'call';   index: number }
   | { type: 'note';   index: number; text: string }
+  | { type: 'commit'; index: number; date: string }
   | { type: 'unknown' };
+
+function parseCommitDate(raw: string): string | null {
+  const s = raw.trim();
+  // YYYY-MM-DD
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  // DD/MM or DD/MM/YYYY
+  const dmy = s.match(/^(\d{1,2})\/(\d{1,2})(?:\/(\d{4}))?$/);
+  if (dmy) {
+    const year = dmy[3] ? parseInt(dmy[3], 10) : new Date().getFullYear();
+    const d = new Date(year, parseInt(dmy[2], 10) - 1, parseInt(dmy[1], 10));
+    if (!isNaN(d.getTime())) return d.toISOString().split('T')[0];
+  }
+  // DD Mon or DD Mon YYYY  (e.g. "15 Nov" or "15 Nov 2026")
+  const dm = s.match(/^(\d{1,2})\s+([A-Za-z]+)(?:\s+(\d{4}))?$/);
+  if (dm) {
+    const year = dm[3] ? parseInt(dm[3], 10) : new Date().getFullYear();
+    const d = new Date(`${dm[2]} ${dm[1]}, ${year}`);
+    if (!isNaN(d.getTime())) return d.toISOString().split('T')[0];
+  }
+  return null;
+}
 
 function parseTaskCommand(text: string): TaskCommand {
   const t = text.trim();
@@ -226,6 +248,12 @@ function parseTaskCommand(text: string): TaskCommand {
 
   const noteMatch   = t.match(/^note\s+(\d+)\s+(.+)$/i);
   if (noteMatch)   return { type: 'note',   index: parseInt(noteMatch[1], 10), text: noteMatch[2].trim() };
+
+  const commitMatch = t.match(/^commit\s+(\d+)\s+(.+)$/i);
+  if (commitMatch) {
+    const date = parseCommitDate(commitMatch[2].trim());
+    if (date) return { type: 'commit', index: parseInt(commitMatch[1], 10), date };
+  }
 
   return { type: 'unknown' };
 }
@@ -249,7 +277,7 @@ function buildTaskList(tasks: RepTask[]): string {
   return (
     `*Your Open Tasks (${tasks.length})*\n\n` +
     `${lines.join('\n\n')}\n\n` +
-    `_Commands: *DONE 1*, *BROKEN 1*, *CALL 1*, *NOTE 1 <text>*_`
+    `_Commands: *DONE 1*, *BROKEN 1*, *COMMIT 1 15 Nov*, *CALL 1*, *NOTE 1 <text>*_`
   );
 }
 
@@ -312,6 +340,14 @@ async function handleTaskCommand(
       await updateRepTask(taskId, { status: 'noted', note: cmd.text });
       await sendText(phone, `📝 Note saved for task ${cmd.index} (*${task.customer_name}*).`);
       break;
+
+    case 'commit': {
+      const displayDate = new Date(cmd.date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+      await updateRepTask(taskId, { status: 'noted', note: `Rep: customer committed to pay on ${displayDate}`, due_date: cmd.date });
+      await updateCommitmentByInvoice(task.invoice_number, { status: 'committed', committed_date: cmd.date });
+      await sendText(phone, `📅 Task ${cmd.index} (*${task.customer_name}*) — committed date set to *${displayDate}*.`);
+      break;
+    }
   }
 }
 
