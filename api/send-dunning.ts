@@ -61,6 +61,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   const dryRun = req.query.dry_run === 'true';
+  const customerFilter = req.query.customers
+    ? (req.query.customers as string).split(',').map(s => s.trim().toUpperCase())
+    : null;
   const t0 = Date.now();
   const repId = await getDefaultRepId();
   let sent = 0;
@@ -73,12 +76,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     console.log('[send-dunning] fetching upcoming invoices...');
     const upcoming = await getUpcomingDueInvoices(7);
-    console.log(`[send-dunning] upcoming=${upcoming.length}`);
+    const filteredUpcoming = customerFilter
+      ? upcoming.filter(i => customerFilter.includes(i.customer_name.toUpperCase()))
+      : upcoming;
+    console.log(`[send-dunning] upcoming=${upcoming.length} filtered=${filteredUpcoming.length}`);
 
-    const commitments = await getCommitmentsByInvoices(upcoming.map(i => i.invoice_number));
-    const phones = await getPhonesByContactIds(upcoming.map(i => i.contact_id));
+    const commitments = await getCommitmentsByInvoices(filteredUpcoming.map(i => i.invoice_number));
+    const phones = await getPhonesByContactIds(filteredUpcoming.map(i => i.contact_id));
 
-    for (const inv of upcoming) {
+    for (const inv of filteredUpcoming) {
       try {
         if (commitments.has(inv.invoice_number)) continue;
         const phone = phones.get(inv.contact_id);
@@ -116,12 +122,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     console.log('[send-dunning] fetching overdue invoices...');
     const overdue = await getOverdueInvoices();
-    console.log(`[send-dunning] overdue=${overdue.length}`);
+    const filteredOverdue = customerFilter
+      ? overdue.filter(i => customerFilter.includes(i.customer_name.toUpperCase()))
+      : overdue;
+    console.log(`[send-dunning] overdue=${overdue.length} filtered=${filteredOverdue.length}`);
 
-    const commitments = await getCommitmentsByInvoices(overdue.map(i => i.invoice_number));
-    const phones = await getPhonesByContactIds(overdue.map(i => i.contact_id));
+    const commitments = await getCommitmentsByInvoices(filteredOverdue.map(i => i.invoice_number));
+    const phones = await getPhonesByContactIds(filteredOverdue.map(i => i.contact_id));
 
-    for (const inv of overdue) {
+    for (const inv of filteredOverdue) {
       try {
         const existing = commitments.get(inv.invoice_number);
         if (existing && existing.template_step >= 2) continue;
