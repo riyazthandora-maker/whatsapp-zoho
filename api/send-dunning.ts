@@ -37,7 +37,7 @@ async function getDefaultRepId(): Promise<string | null> {
 async function getCommitmentsByInvoices(invoiceNumbers: string[]): Promise<Map<string, CommitmentRecord>> {
   if (!invoiceNumbers.length) return new Map();
   const { data } = await supabase
-    .from('dunning_commitments')
+    .from('collection_commitments')
     .select('*')
     .in('invoice_number', invoiceNumbers);
   const map = new Map<string, CommitmentRecord>();
