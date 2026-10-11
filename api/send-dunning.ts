@@ -3,12 +3,12 @@ import { supabase } from '../lib/supabase';
 import { getOverdueInvoices, getUpcomingDueInvoices } from '../lib/zoho';
 import { sendTemplate } from '../lib/whatsapp';
 import {
-  getCommitmentByInvoice,
   createCommitment,
   updateCommitment,
   getCommitmentsForFollowup,
   createRepTask,
 } from '../lib/dunning';
+import type { CommitmentRecord } from '../types';
 
 const COMPANY = () => process.env.COMPANY_NAME || 'Our Company';
 
@@ -27,14 +27,32 @@ async function getDefaultRepId(): Promise<string | null> {
   return (data as { id: string } | null)?.id ?? null;
 }
 
-async function getCustomerPhone(zohoContactId: string): Promise<string | null> {
+// Fetch all commitments for a list of invoice numbers in one query
+async function getCommitmentsByInvoices(invoiceNumbers: string[]): Promise<Map<string, CommitmentRecord>> {
+  if (!invoiceNumbers.length) return new Map();
+  const { data } = await supabase
+    .from('dunning_commitments')
+    .select('*')
+    .in('invoice_number', invoiceNumbers);
+  const map = new Map<string, CommitmentRecord>();
+  for (const row of (data ?? []) as CommitmentRecord[]) {
+    map.set(row.invoice_number, row);
+  }
+  return map;
+}
+
+// Fetch all phones for a list of Zoho contact IDs in one query
+async function getPhonesByContactIds(contactIds: string[]): Promise<Map<string, string>> {
+  if (!contactIds.length) return new Map();
   const { data } = await supabase
     .from('zoho_customers')
-    .select('phone')
-    .eq('zoho_contact_id', zohoContactId)
-    .maybeSingle();
-  const phone = (data as { phone?: string } | null)?.phone;
-  return phone?.trim() || null;
+    .select('zoho_contact_id, phone')
+    .in('zoho_contact_id', contactIds);
+  const map = new Map<string, string>();
+  for (const row of (data ?? []) as { zoho_contact_id: string; phone: string }[]) {
+    if (row.phone?.trim()) map.set(row.zoho_contact_id, row.phone.trim());
+  }
+  return map;
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -43,6 +61,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   const dryRun = req.query.dry_run === 'true';
+  const t0 = Date.now();
   const repId = await getDefaultRepId();
   let sent = 0;
   let advanced = 0;
@@ -52,13 +71,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   // ── Step 1: Advance notice (due in 7 days) ────────────────────────────────
   try {
+    console.log('[send-dunning] fetching upcoming invoices...');
     const upcoming = await getUpcomingDueInvoices(7);
+    console.log(`[send-dunning] upcoming=${upcoming.length}`);
+
+    const commitments = await getCommitmentsByInvoices(upcoming.map(i => i.invoice_number));
+    const phones = await getPhonesByContactIds(upcoming.map(i => i.contact_id));
+
     for (const inv of upcoming) {
       try {
-        const existing = await getCommitmentByInvoice(inv.invoice_number);
-        if (existing) continue;
-
-        const phone = await getCustomerPhone(inv.contact_id);
+        if (commitments.has(inv.invoice_number)) continue;
+        const phone = phones.get(inv.contact_id);
         if (!phone) continue;
 
         if (!dryRun) {
@@ -91,13 +114,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   // ── Step 2: Start overdue dunning ─────────────────────────────────────────
   try {
+    console.log('[send-dunning] fetching overdue invoices...');
     const overdue = await getOverdueInvoices();
+    console.log(`[send-dunning] overdue=${overdue.length}`);
+
+    const commitments = await getCommitmentsByInvoices(overdue.map(i => i.invoice_number));
+    const phones = await getPhonesByContactIds(overdue.map(i => i.contact_id));
+
     for (const inv of overdue) {
       try {
-        const existing = await getCommitmentByInvoice(inv.invoice_number);
+        const existing = commitments.get(inv.invoice_number);
         if (existing && existing.template_step >= 2) continue;
 
-        const phone = await getCustomerPhone(inv.contact_id);
+        const phone = phones.get(inv.contact_id);
         if (!phone) continue;
 
         if (!dryRun) {
@@ -207,8 +236,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     errors.push(`final-fetch: ${err?.message}`);
   }
 
-  console.log(`[send-dunning] dry_run=${dryRun} sent=${sent} advanced=${advanced} finalized=${finalized} errors=${errors.length}`);
+  const elapsed = Date.now() - t0;
+  console.log(`[send-dunning] done in ${elapsed}ms dry_run=${dryRun} sent=${sent} advanced=${advanced} finalized=${finalized} errors=${errors.length}`);
   if (errors.length) console.error('[send-dunning] errors:', errors);
 
-  res.json({ dry_run: dryRun, sent, advanced, finalized, errors, ...(dryRun && { preview }) });
+  res.json({ dry_run: dryRun, sent, advanced, finalized, elapsed_ms: elapsed, errors, ...(dryRun && { preview }) });
 }
