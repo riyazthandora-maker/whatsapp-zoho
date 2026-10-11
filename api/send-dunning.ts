@@ -255,5 +255,5 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   console.log(`[send-dunning] done in ${elapsed}ms dry_run=${dryRun} sent=${sent} advanced=${advanced} finalized=${finalized} errors=${errors.length}`);
   if (errors.length) console.error('[send-dunning] errors:', errors);
 
-  res.json({ dry_run: dryRun, sent, advanced, finalized, elapsed_ms: elapsed, errors, ...(dryRun && { preview }) });
+  res.json({ sent, advanced, finalized, elapsed_ms: elapsed, errors });
 }
