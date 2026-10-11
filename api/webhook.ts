@@ -10,7 +10,7 @@ import { getAuthorizedRep } from '../lib/auth';
 import { getSession, setSession, clearSession } from '../lib/session';
 import { parseIntent } from '../lib/gemini';
 import { findCustomers } from '../lib/customers';
-import { getContactSummary, getStatementPdf, searchItems } from '../lib/zoho';
+import { getContactSummary, getStatementPdf, searchItems, getOutstandingInvoices } from '../lib/zoho';
 import { logStatement } from '../lib/audit';
 import {
   parseAdminCommand,
@@ -606,19 +606,33 @@ async function deliverStatement(
   let deliveryStatus: 'delivered' | 'failed' = 'delivered';
 
   try {
-    const [summary, pdfBuffer] = await Promise.all([
+    const [summary, pdfBuffer, allInvoices] = await Promise.all([
       getContactSummary(contactId),
       getStatementPdf(contactId),
+      getOutstandingInvoices(contactId),
     ]);
 
     const sym = summary.currencySymbol;
     const fmt = (n: number) =>
       `${sym}${Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
+    const today = new Date().toISOString().split('T')[0];
+    const overdueInvoices = allInvoices.filter(inv => inv.due_date < today);
+
+    let overdueBlock = '';
+    if (overdueInvoices.length > 0) {
+      const lines = overdueInvoices.map(inv => {
+        const due = new Date(inv.due_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+        return `*• ${inv.invoice_number} — ${fmt(inv.balance)} (due ${due})*`;
+      });
+      overdueBlock = `\n\n*Overdue Invoices:*\n${lines.join('\n')}`;
+    }
+
     await sendText(
       phone,
       `📄 *${customerName}*\n\n` +
-        `*Balance Due (As of ${asOf}): ${fmt(summary.balanceDue)}*\n\n` +
+        `*Balance Due (As of ${asOf}): ${fmt(summary.balanceDue)}*` +
+        `${overdueBlock}\n\n` +
         `_Pulled by: ${repName}_`
     );
 
