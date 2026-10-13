@@ -9,15 +9,21 @@ import {
   getCommitmentsForFollowup,
   createRepTask,
   normalizePhone,
+  getEffectiveRepIds,
 } from '../lib/dunning';
 import type { CommitmentRecord } from '../types';
 
 const COMPANY = () => process.env.COMPANY_NAME || 'Our Company';
 
+// Commitments in these states must never be re-messaged
+const TERMINAL_STATUSES = new Set(['committed', 'collected', 'broken', 'escalated', 'declined']);
+
 // Testing filter — clear this array to run for all customers
 const TEST_CUSTOMERS = [
   'FAVOURITE BUILDING MATERIAL LLC',
   'HABSHAN ELECT.&SANITARY WARE TR.',
+  'MEDIA BUILDING MATERIAL TRADING LLC',
+  'BAB AL QAMAR ELECT.& SANITARYLLC',
 ];
 
 const fmtAmount = (n: number) =>
@@ -39,15 +45,6 @@ function groupByCustomer<T extends { customer_name: string }>(invoices: T[]): Ma
     map.get(key)!.push(inv);
   }
   return map;
-}
-
-async function getDefaultRepId(): Promise<string | null> {
-  const phone = process.env.DUNNING_REP_PHONE;
-  const q = supabase.from('sales_reps').select('id').eq('is_active', true);
-  if (phone) q.eq('whatsapp_number', phone);
-  else q.eq('role', 'admin');
-  const { data } = await q.limit(1).maybeSingle();
-  return (data as { id: string } | null)?.id ?? null;
 }
 
 // Fetch all commitments for a list of invoice numbers in one query
@@ -89,7 +86,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     ? TEST_CUSTOMERS.map(s => s.toUpperCase())
     : null;
   const t0 = Date.now();
-  const repId = await getDefaultRepId();
   let sent = 0;
   let advanced = 0;
   let finalized = 0;
@@ -118,6 +114,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const upcomingCommitments = await getCommitmentsByInvoices(filteredUpcoming.map(i => i.invoice_number));
     const upcomingPhones = await getPhonesByContactIds(filteredUpcoming.map(i => i.contact_id));
+    const upcomingReps = await getEffectiveRepIds(filteredUpcoming.map(i => i.contact_id));
 
     for (const [, group] of groupByCustomer(filteredUpcoming)) {
       try {
@@ -138,7 +135,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               customer_phone: phone,
               invoice_number: inv.invoice_number,
               amount: inv.balance,
-              assigned_rep_id: repId,
+              assigned_rep_id: upcomingReps.get(inv.contact_id) ?? null,
               template_step: 1,
             });
           }
@@ -172,12 +169,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const overdueCommitments = await getCommitmentsByInvoices(filteredOverdue.map(i => i.invoice_number));
     const overduePhones = await getPhonesByContactIds(filteredOverdue.map(i => i.contact_id));
+    const overdueReps = await getEffectiveRepIds(filteredOverdue.map(i => i.contact_id));
 
     for (const [, group] of groupByCustomer(filteredOverdue)) {
       try {
         const actionable = group.filter(i => {
           const c = overdueCommitments.get(i.invoice_number);
-          return !c || c.template_step < 2;
+          if (!c) return true;
+          if (TERMINAL_STATUSES.has(c.status)) return false;
+          return c.template_step < 2;
         });
         if (!actionable.length) continue;
         const phone = overduePhones.get(actionable[0].contact_id);
@@ -202,7 +202,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
                 customer_phone: phone,
                 invoice_number: inv.invoice_number,
                 amount: inv.balance,
-                assigned_rep_id: repId,
+                assigned_rep_id: overdueReps.get(inv.contact_id) ?? null,
                 template_step: 2,
               });
             }

@@ -14,6 +14,8 @@ export async function syncCustomers(): Promise<number> {
       name: c.contact_name,
       email: c.email || null,
       phone: c.phone || null,
+      sales_exec_name: c.sales_exec_name || null,
+      sales_exec_phone: c.sales_exec_phone || null,
       updated_at: new Date().toISOString(),
     }));
 

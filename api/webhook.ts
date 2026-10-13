@@ -29,6 +29,9 @@ import {
   clearDunningSession,
   getCommitmentById,
   getCommitmentsByPhone,
+  getLatestCommitmentByPhone,
+  selectCommitmentForMessage,
+  getRepById,
   updateCommitment,
   updateCommitmentByInvoice,
   addConversationMessage,
@@ -100,19 +103,42 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (!rep) {
       const normPhone = normalizePhone(phone);
 
-      // Check for active dunning AI conversation (Redis session exists)
+      // Customer asked for their statement — serve it if we have a commitment on file
+      if (isStatementRequest(text)) {
+        const commitment = await getLatestCommitmentByPhone(normPhone);
+        if (commitment) {
+          await deliverCustomerStatement(phone, commitment.customer_zoho_id, commitment.customer_name);
+        }
+        return res.status(200).end();
+      }
+
       const dunningSession = await getDunningSession(normPhone);
+      const activeCommitments = await getCommitmentsByPhone(normPhone);
+
+      // A bare greeting must not re-pitch an invoice we're already handling
+      if ((dunningSession || activeCommitments.length > 0) && isGreeting(text)) {
+        const alreadyEngaged =
+          !!dunningSession || activeCommitments.some(c => c.customer_replied_at);
+        if (alreadyEngaged) {
+          const name = (await getCommitmentById(dunningSession?.commitmentId ?? activeCommitments[0].id))?.customer_name;
+          await sendText(phone, greetingAck(name));
+          return res.status(200).end();
+        }
+      }
+
+      // Active dunning AI conversation (Redis session exists)
       if (dunningSession) {
         await handleDunningReply(normPhone, text, dunningSession);
         return res.status(200).end();
       }
 
-      // Check for first reply to a dunning template (no Redis session yet)
-      const pendingCommitments = await getCommitmentsByPhone(normPhone);
-      if (pendingCommitments.length > 0) {
+      // First reply to a dunning template (no Redis session yet)
+      if (activeCommitments.length > 0) {
+        const matched = selectCommitmentForMessage(text, activeCommitments);
         const freshSession: DunningSessionData = {
-          commitmentId: pendingCommitments[0].id,
+          commitmentId: matched!.id,
           exchangeCount: 0,
+          unclearStreak: 0,
         };
         await handleDunningReply(normPhone, text, freshSession);
         return res.status(200).end();
@@ -355,6 +381,63 @@ async function updateCommitmentStatus(invoiceNumber: string, status: string) {
   await updateCommitmentByInvoice(invoiceNumber, { status });
 }
 
+// ── Customer message helpers ──────────────────────────────────────────────────
+
+const GREETING_RE =
+  /^(hi+|hey+|hello+|salam|salaam|salam\s*alaikum|assalam[ou]?\s*alaikum|السلام\s*عليكم|مرحبا|أهلا|اهلا|नमस्ते|नमस्कार|हाय|हैलो)[\s!.,؟]*$/i;
+
+function isGreeting(text: string): boolean {
+  return GREETING_RE.test(text.trim());
+}
+
+const STATEMENT_RE = /statement|ledger|account statement|كشف\s*حساب|स्टेटमेंट|हिसाब/i;
+
+function isStatementRequest(text: string): boolean {
+  return STATEMENT_RE.test(text);
+}
+
+function greetingAck(name: string | undefined): string {
+  return name
+    ? `Hello ${name}, thanks for your message. Our team is handling your account — let us know if there's anything specific you need.`
+    : `Hello, thanks for your message. Let us know if there's anything specific you need.`;
+}
+
+function handoffLine(name: string, phone: string | null, lang: string): string {
+  const p = phone ? phone : null;
+  switch (lang) {
+    case 'ar':
+      return p
+        ? `سيتواصل معك مندوب المبيعات ${name} قريبًا. يمكنك التواصل معه على ${p}.`
+        : `سيتواصل معك مندوب المبيعات ${name} قريبًا.`;
+    case 'hi':
+      return p
+        ? `हमारे सेल्स प्रतिनिधि ${name} शीघ्र ही आपसे संपर्क करेंगे। आप उनसे ${p} पर संपर्क कर सकते हैं।`
+        : `हमारे सेल्स प्रतिनिधि ${name} शीघ्र ही आपसे संपर्क करेंगे।`;
+    default:
+      return p
+        ? `Our sales agent ${name} will contact you shortly. You can also reach them on ${p}.`
+        : `Our sales agent ${name} will contact you shortly.`;
+  }
+}
+
+function unclearHandoffMessage(name: string, phone: string | null, lang: string): string {
+  const p = phone ? phone : null;
+  switch (lang) {
+    case 'ar':
+      return p
+        ? `عذرًا، لم أفهم طلبك. سيتواصل معك مندوب المبيعات ${name} قريبًا. يمكنك التواصل معه على ${p}.`
+        : `عذرًا، لم أفهم طلبك. سيتواصل معك مندوب المبيعات ${name} قريبًا.`;
+    case 'hi':
+      return p
+        ? `क्षमा करें, मैं आपका संदेश समझ नहीं पाया। हमारे सेल्स प्रतिनिधि ${name} शीघ्र ही आपसे संपर्क करेंगे। आप उनसे ${p} पर संपर्क कर सकते हैं।`
+        : `क्षमा करें, मैं आपका संदेश समझ नहीं पाया। हमारे सेल्स प्रतिनिधि ${name} शीघ्र ही आपसे संपर्क करेंगे।`;
+    default:
+      return p
+        ? `Sorry, I couldn't understand your request. Our sales agent ${name} will contact you shortly. You can also reach them on ${p}.`
+        : `Sorry, I couldn't understand your request. Our sales agent ${name} will contact you shortly.`;
+  }
+}
+
 // ── Dunning customer reply handler ────────────────────────────────────────────
 
 async function handleDunningReply(
@@ -362,7 +445,7 @@ async function handleDunningReply(
   text: string,
   dunningSession: DunningSessionData
 ) {
-  const { commitmentId, exchangeCount } = dunningSession;
+  const { commitmentId, exchangeCount, unclearStreak = 0 } = dunningSession;
 
   const commitment = await getCommitmentById(commitmentId);
   if (!commitment) {
@@ -381,16 +464,21 @@ async function handleDunningReply(
     });
   }
 
-  // Fetch all pending commitments for this phone for consolidated context
-  const allCommitments = await getCommitmentsByPhone(phone);
-  const totalAmount = allCommitments.reduce((s, c) => s + Number(c.amount), 0) || commitment.amount;
-  const allInvoices = allCommitments.map(c => c.invoice_number);
+  // Fetch all active commitments for this phone for consolidated context
+  const activeCommitments = await getCommitmentsByPhone(phone);
+  const totalAmount = activeCommitments.reduce((s, c) => s + Number(c.amount), 0) || commitment.amount;
+  const allInvoices = activeCommitments.map(c => c.invoice_number);
   const invoiceStr = allInvoices.length > 3
     ? allInvoices.slice(0, 3).join(', ') + '...'
     : allInvoices.join(', ') || commitment.invoice_number;
 
   // Load full conversation history (minus the message we just saved — pass it as latestMessage)
   const history = await getConversationHistory(commitmentId);
+
+  // Resolve the assigned sales agent so handoffs can name a real person
+  const repInfo = commitment.assigned_rep_id ? await getRepById(commitment.assigned_rep_id) : null;
+  const repName = repInfo?.name ?? 'our sales team';
+  const repPhone = repInfo?.whatsapp_number ?? process.env.DUNNING_REP_PHONE ?? null;
 
   const aiResult = await manageDunningReply({
     customerName: commitment.customer_name,
@@ -401,14 +489,49 @@ async function handleDunningReply(
     latestMessage: text,
     exchangeCount,
     noCount: commitment.no_count,
+    repName,
+    unclearStreak,
   });
 
-  // Save bot reply and send to customer
-  await addConversationMessage(commitmentId, 'bot', aiResult.reply, aiResult.languageDetected);
-  await sendText(phone, aiResult.reply);
-
   const newExchangeCount = exchangeCount + 1;
-  const baseUpdate = { exchange_count: newExchangeCount };
+  const baseUpdate: Record<string, unknown> = { exchange_count: newExchangeCount };
+  if (aiResult.refused) baseUpdate.no_count = commitment.no_count + 1;
+
+  // ── Unclear: apologise and ask to repeat; hand off after 2 in a row ──────────
+  if (aiResult.status === 'unclear') {
+    const newStreak = unclearStreak + 1;
+    if (newStreak < 2) {
+      await addConversationMessage(commitmentId, 'bot', aiResult.reply, aiResult.languageDetected);
+      await sendText(phone, aiResult.reply);
+      await updateCommitment(commitmentId, { ...baseUpdate, status: 'negotiating' });
+      await setDunningSession(phone, { commitmentId, exchangeCount: newExchangeCount, unclearStreak: newStreak });
+      return;
+    }
+    // Second miss — hand off to the sales agent with their number
+    const reply = unclearHandoffMessage(repName, repPhone, aiResult.languageDetected);
+    await addConversationMessage(commitmentId, 'bot', reply, aiResult.languageDetected);
+    await sendText(phone, reply);
+    await updateCommitment(commitmentId, { ...baseUpdate, status: 'escalated' });
+    await createRepTask({
+      rep_id: commitment.assigned_rep_id,
+      customer_zoho_id: commitment.customer_zoho_id,
+      customer_name: commitment.customer_name,
+      invoice_number: commitment.invoice_number,
+      amount: commitment.amount,
+      task_type: 'escalation',
+      note: 'Could not understand customer after 2 messages',
+    });
+    await clearDunningSession(phone);
+    return;
+  }
+
+  // ── Clear cases — reset the unclear streak ───────────────────────────────────
+  let reply = aiResult.reply;
+  if (aiResult.status === 'escalate') {
+    reply = `${reply}\n\n${handoffLine(repName, repPhone, aiResult.languageDetected)}`;
+  }
+  await addConversationMessage(commitmentId, 'bot', reply, aiResult.languageDetected);
+  await sendText(phone, reply);
 
   if (aiResult.status === 'committed') {
     await updateCommitment(commitmentId, { ...baseUpdate, status: 'committed', committed_date: aiResult.committedDate });
@@ -439,7 +562,7 @@ async function handleDunningReply(
 
   } else if (aiResult.status === 'soft_commitment') {
     await updateCommitment(commitmentId, { ...baseUpdate, status: 'soft_commitment' });
-    await setDunningSession(phone, { commitmentId, exchangeCount: newExchangeCount });
+    await setDunningSession(phone, { commitmentId, exchangeCount: newExchangeCount, unclearStreak: 0 });
 
   } else if (aiResult.status === 'closed') {
     await updateCommitment(commitmentId, { ...baseUpdate, status: 'declined' });
@@ -448,7 +571,7 @@ async function handleDunningReply(
   } else {
     // ongoing — continue conversation
     await updateCommitment(commitmentId, { ...baseUpdate, status: 'negotiating' });
-    await setDunningSession(phone, { commitmentId, exchangeCount: newExchangeCount });
+    await setDunningSession(phone, { commitmentId, exchangeCount: newExchangeCount, unclearStreak: 0 });
   }
 }
 
@@ -591,19 +714,14 @@ async function resolveCustomer(
   await sendText(phone, `${header}${list}${moreHint}`);
 }
 
-async function deliverStatement(
+async function sendStatementContent(
   phone: string,
   contactId: string,
   customerName: string,
-  repId: string,
-  repName: string
-) {
-  await sendText(phone, `Fetching statement for *${customerName}*...`);
-
+  footer?: string
+): Promise<'delivered' | 'failed'> {
   const now = new Date();
   const asOf = now.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
-
-  let deliveryStatus: 'delivered' | 'failed' = 'delivered';
 
   try {
     const [summary, pdfBuffer, allInvoices] = await Promise.all([
@@ -632,8 +750,8 @@ async function deliverStatement(
       phone,
       `📄 *${customerName}*\n\n` +
         `*Balance Due (As of ${asOf}): ${fmt(summary.balanceDue)}*` +
-        `${overdueBlock}\n\n` +
-        `_Pulled by: ${repName}_`
+        `${overdueBlock}` +
+        (footer ? `\n\n_${footer}_` : '')
     );
 
     if (pdfBuffer) {
@@ -641,9 +759,25 @@ async function deliverStatement(
       const mediaId = await uploadMedia(pdfBuffer, filename);
       await sendDocument(phone, mediaId, filename, `${customerName} — Outstanding Statement`);
     }
+    return 'delivered';
   } catch (err) {
-    console.error('[webhook] deliverStatement error:', err);
-    deliveryStatus = 'failed';
+    console.error('[webhook] sendStatementContent error:', err);
+    return 'failed';
+  }
+}
+
+async function deliverStatement(
+  phone: string,
+  contactId: string,
+  customerName: string,
+  repId: string,
+  repName: string
+) {
+  await sendText(phone, `Fetching statement for *${customerName}*...`);
+
+  const deliveryStatus = await sendStatementContent(phone, contactId, customerName, `Pulled by: ${repName}`);
+
+  if (deliveryStatus === 'failed') {
     await sendText(phone, 'Sorry, I could not retrieve the statement right now. Reply *retry* to try again.');
     await setSession(phone, {
       state: 'awaiting_retry',
@@ -658,6 +792,24 @@ async function deliverStatement(
     repId,
     repName,
     repPhone: phone,
+    customerZohoId: contactId,
+    customerName,
+    deliveryStatus,
+  });
+}
+
+// Customer-initiated statement request (no rep identity — logged with null rep)
+async function deliverCustomerStatement(phone: string, contactId: string, customerName: string) {
+  const deliveryStatus = await sendStatementContent(phone, contactId, customerName);
+
+  if (deliveryStatus === 'failed') {
+    await sendText(phone, 'Sorry, we could not retrieve your statement right now. Our sales agent will contact you.');
+  }
+
+  await logStatement({
+    repId: null,
+    repName: null,
+    repPhone: null,
     customerZohoId: contactId,
     customerName,
     deliveryStatus,

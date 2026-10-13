@@ -53,14 +53,16 @@ export interface WhatsAppMessage {
 export interface DunningSessionData {
   commitmentId: string;
   exchangeCount: number;
+  unclearStreak?: number;
 }
 
 export interface DunningReply {
   reply: string;
-  status: 'ongoing' | 'committed' | 'soft_commitment' | 'escalate' | 'closed';
+  status: 'ongoing' | 'committed' | 'soft_commitment' | 'escalate' | 'closed' | 'unclear';
   committedDate: string | null;
   reason: string | null;
   languageDetected: string;
+  refused: boolean;
 }
 
 export interface CommitmentRecord {

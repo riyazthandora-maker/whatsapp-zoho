@@ -1,9 +1,9 @@
 import { supabase } from './supabase';
 
 export async function logStatement(params: {
-  repId: string;
-  repName: string;
-  repPhone: string;
+  repId: string | null;
+  repName: string | null;
+  repPhone: string | null;
   customerZohoId: string;
   customerName: string;
   deliveryStatus: 'delivered' | 'failed';

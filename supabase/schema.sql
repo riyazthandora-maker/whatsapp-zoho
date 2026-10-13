@@ -15,6 +15,8 @@ CREATE TABLE IF NOT EXISTS zoho_customers (
   name             TEXT        NOT NULL,
   email            TEXT,
   phone            TEXT,
+  sales_exec_name  TEXT,       -- Zoho cf_sales_executive (account executive)
+  sales_exec_phone TEXT,       -- Zoho cf_sales_executive_contact
   updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -26,8 +28,8 @@ CREATE INDEX IF NOT EXISTS idx_zoho_customers_name
 CREATE TABLE IF NOT EXISTS audit_log (
   id               UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
   rep_id           UUID        REFERENCES sales_reps(id),
-  rep_name         TEXT        NOT NULL,
-  rep_phone        TEXT        NOT NULL,
+  rep_name         TEXT,       -- NULL for customer-initiated (bot-served) statements
+  rep_phone        TEXT,       -- NULL for customer-initiated (bot-served) statements
   customer_zoho_id TEXT        NOT NULL,
   customer_name    TEXT        NOT NULL,
   statement_from   DATE,

@@ -284,9 +284,16 @@ export async function getUpcomingDueInvoices(daysFromNow: number): Promise<Overd
     }));
 }
 
-export async function listContacts(page = 1): Promise<
-  { contact_id: string; contact_name: string; email: string; phone: string }[]
-> {
+export interface ZohoContact {
+  contact_id: string;
+  contact_name: string;
+  email: string;
+  phone: string;
+  sales_exec_name: string;
+  sales_exec_phone: string;
+}
+
+export async function listContacts(page = 1): Promise<ZohoContact[]> {
   const token = await getAccessToken();
   const qs = new URLSearchParams({
     organization_id: ORG(),
@@ -301,5 +308,12 @@ export async function listContacts(page = 1): Promise<
   });
 
   const data = (await res.json()) as any;
-  return data.contacts ?? [];
+  return ((data.contacts ?? []) as any[]).map(c => ({
+    contact_id: c.contact_id,
+    contact_name: c.contact_name,
+    email: c.email ?? '',
+    phone: c.phone ?? '',
+    sales_exec_name: c.cf_sales_executive ?? '',
+    sales_exec_phone: c.cf_sales_executive_contact ?? '',
+  }));
 }

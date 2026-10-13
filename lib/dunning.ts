@@ -79,6 +79,92 @@ export async function getCommitmentsByPhone(phone: string): Promise<CommitmentRe
   return (data ?? []) as CommitmentRecord[];
 }
 
+// Most recent commitment for a phone regardless of status (used to serve
+// statements to customers who have already been contacted, even if committed/closed)
+export async function getLatestCommitmentByPhone(phone: string): Promise<CommitmentRecord | null> {
+  const norm = normalizePhone(phone);
+  const { data } = await supabase
+    .from('collection_commitments')
+    .select('*')
+    .eq('customer_phone', norm)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  return (data as CommitmentRecord) ?? null;
+}
+
+// Pick which of a customer's active commitments an inbound message belongs to.
+// 1) an invoice number named in the message  2) else the most recently templated one
+export function selectCommitmentForMessage(
+  text: string,
+  commitments: CommitmentRecord[]
+): CommitmentRecord | null {
+  if (!commitments.length) return null;
+  const upper = text.toUpperCase();
+  const byInvoice = commitments.find(c => upper.includes(c.invoice_number.toUpperCase()));
+  if (byInvoice) return byInvoice;
+  const sorted = [...commitments].sort((a, b) =>
+    (b.template_sent_at ?? b.created_at).localeCompare(a.template_sent_at ?? a.created_at)
+  );
+  return sorted[0];
+}
+
+export async function getRepById(
+  id: string
+): Promise<{ id: string; name: string; whatsapp_number: string } | null> {
+  const { data } = await supabase
+    .from('sales_reps')
+    .select('id, name, whatsapp_number')
+    .eq('id', id)
+    .maybeSingle();
+  return (data as { id: string; name: string; whatsapp_number: string }) ?? null;
+}
+
+// ── Rep routing ───────────────────────────────────────────────────────────────
+
+// Last 9 digits — robust to country-code differences and typos (+971 vs +91 vs 0…)
+function last9(phone: string): string {
+  const d = phone.replace(/\D/g, '');
+  return d.length >= 9 ? d.slice(-9) : '';
+}
+
+// Map each customer's Zoho contact id to the sales rep who owns it.
+// Match on sales-exec phone (last 9 digits) first, then exact name.
+// Customers that don't map are simply omitted (caller treats them as unassigned).
+export async function getEffectiveRepIds(contactIds: string[]): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  if (!contactIds.length) return out;
+
+  const repByPhone = new Map<string, string>();
+  const repByName = new Map<string, string>();
+  const { data: reps } = await supabase
+    .from('sales_reps')
+    .select('id, name, whatsapp_number')
+    .eq('is_active', true);
+  for (const r of (reps ?? []) as { id: string; name: string; whatsapp_number: string }[]) {
+    const p = last9(r.whatsapp_number ?? '');
+    if (p) repByPhone.set(p, r.id);
+    repByName.set(r.name.trim().toLowerCase(), r.id);
+  }
+
+  const { data: custs } = await supabase
+    .from('zoho_customers')
+    .select('zoho_contact_id, sales_exec_phone, sales_exec_name')
+    .in('zoho_contact_id', contactIds);
+
+  for (const c of (custs ?? []) as {
+    zoho_contact_id: string;
+    sales_exec_phone: string | null;
+    sales_exec_name: string | null;
+  }[]) {
+    const p = last9(c.sales_exec_phone ?? '');
+    const repId = (p ? repByPhone.get(p) : undefined)
+      ?? (c.sales_exec_name ? repByName.get(c.sales_exec_name.trim().toLowerCase()) : undefined);
+    if (repId) out.set(c.zoho_contact_id, repId);
+  }
+  return out;
+}
+
 export async function createCommitment(data: {
   customer_zoho_id: string;
   customer_name: string;

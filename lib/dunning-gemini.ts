@@ -12,8 +12,10 @@ export async function manageDunningReply(params: {
   latestMessage: string;
   exchangeCount: number;
   noCount: number;
+  repName: string;
+  unclearStreak: number;
 }): Promise<DunningReply> {
-  const { customerName, invoiceNumber, amount, companyName, history, latestMessage, exchangeCount, noCount } = params;
+  const { customerName, invoiceNumber, amount, companyName, history, latestMessage, exchangeCount, noCount, repName, unclearStreak } = params;
 
   const historyText = history.length
     ? history.map(h => `${h.role === 'bot' ? 'Us' : 'Customer'}: ${h.message}`).join('\n')
@@ -31,8 +33,9 @@ Context:
 - Amount: AED ${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
 - Previous exchanges: ${exchangeCount}
 - Times customer said no/can't pay: ${noCount}
-${maxExchangesReached ? '- NOTE: Maximum exchanges reached. Our sales staff will follow up directly.' : ''}
-${tooManyNos ? '- NOTE: Customer has refused 3+ times. Our sales staff will follow up directly.' : ''}
+- Sales agent handling this customer: ${repName}
+${maxExchangesReached ? '- NOTE: Maximum exchanges reached. Our sales agent must take over.' : ''}
+${tooManyNos ? '- NOTE: Customer has refused 3+ times. Our sales agent must take over.' : ''}
 
 Conversation so far:
 ${historyText}
@@ -42,18 +45,19 @@ Customer's latest message: "${latestMessage}"
 Your rules:
 1. Detect the language of the customer's latest message and reply in that EXACT language.
 2. Goal: get a specific payment date commitment.
-3. Specific date given → set status "committed", extract the date.
-4. Vague yes ("will pay", "shortly", "soon") → ask for a specific date, status "soft_commitment".
-5. Decline/can't pay → empathize, try partial payment or a later date, status "ongoing". Keep it brief.
-6. Dispute ("already paid", "wrong invoice", "not my bill") → tell them our sales staff will contact them to resolve it, status "escalate".
-7. Abusive or threatening language → tell them our sales staff will contact them, status "escalate".
-8. If ${maxExchangesReached || tooManyNos ? 'immediately' : 'after 5+ exchanges without commitment'} → tell them our sales staff will be in touch, status "escalate".
-9. If conversation is clearly resolved with no further action → status "closed".
-10. If the message is unclear, gibberish, or you cannot understand it → reply exactly "Sorry, I didn't get that. Could you please repeat?" in the same language, status "ongoing".
-11. NEVER use the word "escalate" or "escalation" in any reply to the customer. Instead say "our sales staff will contact you".
+3. Specific date given → set status "committed", extract the date. refused=false.
+4. Vague yes ("will pay", "shortly", "soon") → ask for a specific date, status "soft_commitment", refused=false.
+5. Decline / can't pay / no money → empathize briefly, try partial payment or a later date, status "ongoing", refused=true.
+6. Payment dispute ("already paid", "wrong invoice", "not my bill") → say our sales agent ${repName} will contact them to resolve it, status "escalate", refused=false.
+7. Abusive or threatening language → say our sales agent ${repName} will contact them, status "escalate", refused=false.
+8. If ${maxExchangesReached || tooManyNos ? 'immediately' : 'after 5+ exchanges without commitment'} → say our sales agent ${repName} will be in touch, status "escalate", refused=false.
+9. If the conversation is clearly resolved with no further action → status "closed", refused=false.
+10. If the message is unclear, gibberish, off-topic, or a question you cannot answer confidently (e.g. stock, prices, anything not about this payment) → reply with ONE short apology in the customer's language asking them to rephrase, set status "unclear", refused=false.
+11. NEVER use the words "escalate" or "escalation" in any reply to the customer. Instead say our sales agent will contact them.
+12. NEVER write any phone number in your reply — the system appends contact details automatically.
 
 Reply ONLY with a raw JSON object (no markdown, no code fences):
-{"reply":"your message in the customer's language","status":"ongoing|committed|soft_commitment|escalate|closed","committedDate":"YYYY-MM-DD or null","reason":"reason or null","languageDetected":"en|ar|hi|tl|ml|ur|..."}`;
+{"reply":"your message in the customer's language","status":"ongoing|committed|soft_commitment|escalate|closed|unclear","committedDate":"YYYY-MM-DD or null","reason":"reason or null","languageDetected":"en|ar|hi|tl|ml|ur|...","refused":true|false}`;
 
   try {
     const response = await getAI().models.generateContent({
@@ -63,7 +67,8 @@ Reply ONLY with a raw JSON object (no markdown, no code fences):
 
     const raw = response.text?.trim() ?? '';
     const text = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
-    return JSON.parse(text) as DunningReply;
+    const parsed = JSON.parse(text) as DunningReply;
+    return { ...parsed, refused: parsed.refused === true };
   } catch (err) {
     console.error('[dunning-gemini] error:', err);
     return {
@@ -72,6 +77,7 @@ Reply ONLY with a raw JSON object (no markdown, no code fences):
       committedDate: null,
       reason: 'Gemini error — auto-escalated to rep',
       languageDetected: 'en',
+      refused: false,
     };
   }
 }
