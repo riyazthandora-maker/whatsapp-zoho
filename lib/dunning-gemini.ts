@@ -1,4 +1,5 @@
 import { GoogleGenAI } from '@google/genai';
+import { buildDateContext } from './dates';
 import type { DunningReply } from '../types';
 
 const getAI = () => new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
@@ -27,6 +28,8 @@ export async function manageDunningReply(params: {
   const prompt = `You are a polite but firm payment follow-up assistant for ${companyName}, a UAE trading company.
 You are managing a WhatsApp conversation to collect an overdue invoice payment.
 
+${buildDateContext()}
+
 Context:
 - Customer: ${customerName}
 - Invoice: ${invoiceNumber}
@@ -45,8 +48,16 @@ Customer's latest message: "${latestMessage}"
 Your rules:
 1. Detect the language of the customer's latest message and reply in that EXACT language.
 2. Goal: get a specific payment date commitment.
-3. Specific date given → set status "committed", extract the date. refused=false.
-4. Vague yes ("will pay", "shortly", "soon") → ask for a specific date, status "soft_commitment", refused=false.
+3. Specific payment date given → set status "committed". Put the EXACT date words the customer used into "committedDatePhrase" (e.g. "next Tuesday", "15 Nov", "this weekend", "in two weeks"). Do NOT compute a calendar date yourself and ALWAYS set "committedDate" to null — the system resolves the phrase. refused=false.
+3a. Every relative date resolves FORWARD from today (given above). Never a past date:
+   - "tomorrow" → next day; "day after tomorrow" → +2 days
+   - a weekday name or "next <weekday>" → the nearest upcoming such weekday (strictly after today)
+   - "this weekend" / "end of the week" → the upcoming Friday
+   - "next weekend" → the Saturday of the following week
+   - "end of the month" → the last day of this month; "next month" → same day next month
+   - "in N days/weeks" → today + N
+   - an explicit date ("15 Nov", "15/11") → that date in the nearest future year
+4. Vague yes ("will pay", "shortly", "soon") with no recognisable date → ask for a specific date, status "soft_commitment", refused=false.
 5. Decline / can't pay / no money → empathize briefly, try partial payment or a later date, status "ongoing", refused=true.
 6. Payment dispute ("already paid", "wrong invoice", "not my bill") → say our sales agent ${repName} will contact them to resolve it, status "escalate", refused=false.
 7. Abusive or threatening language → say our sales agent ${repName} will contact them, status "escalate", refused=false.
@@ -57,7 +68,7 @@ Your rules:
 12. NEVER write any phone number in your reply — the system appends contact details automatically.
 
 Reply ONLY with a raw JSON object (no markdown, no code fences):
-{"reply":"your message in the customer's language","status":"ongoing|committed|soft_commitment|escalate|closed|unclear","committedDate":"YYYY-MM-DD or null","reason":"reason or null","languageDetected":"en|ar|hi|tl|ml|ur|...","refused":true|false}`;
+{"reply":"your message in the customer's language","status":"ongoing|committed|soft_commitment|escalate|closed|unclear","committedDatePhrase":"exact date words used by the customer, or null","committedDate":null,"reason":"reason or null","languageDetected":"en|ar|hi|tl|ml|ur|...","refused":true|false}`;
 
   try {
     const response = await getAI().models.generateContent({
@@ -74,6 +85,7 @@ Reply ONLY with a raw JSON object (no markdown, no code fences):
     return {
       reply: 'Thank you for your message. A team member will be in touch with you shortly.',
       status: 'escalate',
+      committedDatePhrase: null,
       committedDate: null,
       reason: 'Gemini error — auto-escalated to rep',
       languageDetected: 'en',

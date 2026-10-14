@@ -59,6 +59,7 @@ export interface DunningSessionData {
 export interface DunningReply {
   reply: string;
   status: 'ongoing' | 'committed' | 'soft_commitment' | 'escalate' | 'closed' | 'unclear';
+  committedDatePhrase: string | null;
   committedDate: string | null;
   reason: string | null;
   languageDetected: string;

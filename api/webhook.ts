@@ -45,6 +45,7 @@ import {
   normalizePhone,
 } from '../lib/dunning';
 import { manageDunningReply } from '../lib/dunning-gemini';
+import { resolveCommittedDate, dubaiTodayISO, dateConfirmLine } from '../lib/dates';
 import type {
   Session,
   SalesRep,
@@ -534,7 +535,27 @@ async function handleDunningReply(
   await sendText(phone, reply);
 
   if (aiResult.status === 'committed') {
-    await updateCommitment(commitmentId, { ...baseUpdate, status: 'committed', committed_date: aiResult.committedDate });
+    const todayISO = dubaiTodayISO();
+    const modelDate =
+      aiResult.committedDate && /^\d{4}-\d{2}-\d{2}$/.test(aiResult.committedDate)
+        ? aiResult.committedDate
+        : null;
+    // The code-computed date from the customer's own words is authoritative.
+    const resolved =
+      resolveCommittedDate(aiResult.committedDatePhrase)
+      ?? (modelDate && modelDate >= todayISO ? modelDate : null);
+
+    if (!resolved) {
+      // No date we can trust in the future — keep it soft, never create a bad rep task.
+      await updateCommitment(commitmentId, { ...baseUpdate, status: 'soft_commitment' });
+      await setDunningSession(phone, { commitmentId, exchangeCount: newExchangeCount, unclearStreak: 0 });
+      return;
+    }
+
+    const confirm = dateConfirmLine(aiResult.languageDetected, resolved);
+    await addConversationMessage(commitmentId, 'bot', confirm, aiResult.languageDetected);
+    await sendText(phone, confirm);
+    await updateCommitment(commitmentId, { ...baseUpdate, status: 'committed', committed_date: resolved });
     await createRepTask({
       rep_id: commitment.assigned_rep_id,
       customer_zoho_id: commitment.customer_zoho_id,
@@ -542,8 +563,8 @@ async function handleDunningReply(
       invoice_number: commitment.invoice_number,
       amount: commitment.amount,
       task_type: 'collection',
-      due_date: aiResult.committedDate,
-      note: `Customer committed to pay on ${aiResult.committedDate ?? 'unspecified date'}`,
+      due_date: resolved,
+      note: `Customer committed to pay on ${resolved}`,
     });
     await clearDunningSession(phone);
 
