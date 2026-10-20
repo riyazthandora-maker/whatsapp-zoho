@@ -45,7 +45,7 @@ import {
   normalizePhone,
 } from '../lib/dunning';
 import { manageDunningReply } from '../lib/dunning-gemini';
-import { resolveCommittedDate, dubaiTodayISO, dateConfirmLine } from '../lib/dates';
+import { resolveCommittedDate, dubaiTodayISO } from '../lib/dates';
 import type {
   Session,
   SalesRep,
@@ -552,9 +552,6 @@ async function handleDunningReply(
       return;
     }
 
-    const confirm = dateConfirmLine(aiResult.languageDetected, resolved);
-    await addConversationMessage(commitmentId, 'bot', confirm, aiResult.languageDetected);
-    await sendText(phone, confirm);
     await updateCommitment(commitmentId, { ...baseUpdate, status: 'committed', committed_date: resolved });
     await createRepTask({
       rep_id: commitment.assigned_rep_id,
@@ -562,9 +559,9 @@ async function handleDunningReply(
       customer_name: commitment.customer_name,
       invoice_number: commitment.invoice_number,
       amount: commitment.amount,
-      task_type: 'collection',
+      task_type: 'escalation',
       due_date: resolved,
-      note: `Customer committed to pay on ${resolved}`,
+      note: `Customer committed to pay on ${resolved}. Call to confirm payment arrangements.`,
     });
     await clearDunningSession(phone);
 

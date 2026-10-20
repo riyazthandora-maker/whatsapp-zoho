@@ -221,33 +221,45 @@ export interface OverdueInvoice {
 
 export async function getOverdueInvoices(): Promise<OverdueInvoice[]> {
   const token = await getAccessToken();
-  const qs = new URLSearchParams({
-    organization_id: ORG(),
-    status: 'overdue',
-    per_page: '200',
-  });
+  const out: OverdueInvoice[] = [];
+  let page = 1;
 
-  const res = await fetch(`${BASE()}/books/v3/invoices?${qs}`, {
-    headers: zohoHeaders(token),
-  });
+  while (true) {
+    const qs = new URLSearchParams({
+      organization_id: ORG(),
+      status: 'overdue',
+      per_page: '200',
+      page: String(page),
+    });
 
-  if (!res.ok) {
-    const body = await res.text().catch(() => '');
-    throw new Error(`Zoho overdue invoices ${res.status}: ${body}`);
+    const res = await fetch(`${BASE()}/books/v3/invoices?${qs}`, {
+      headers: zohoHeaders(token),
+    });
+
+    if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      throw new Error(`Zoho overdue invoices ${res.status}: ${body}`);
+    }
+
+    const data = (await res.json()) as any;
+    const batch = ((data.invoices ?? []) as any[]).filter(inv => (inv.balance ?? 0) > 0);
+    for (const inv of batch) {
+      out.push({
+        invoice_id: inv.invoice_id,
+        invoice_number: inv.invoice_number,
+        contact_id: inv.contact_id ?? inv.customer_id,
+        customer_name: inv.customer_name,
+        due_date: inv.due_date,
+        balance: inv.balance ?? 0,
+        currency_symbol: inv.currency_symbol ?? 'AED ',
+      });
+    }
+
+    if (!data.page_context?.has_more_page) break;
+    page++;
   }
 
-  const data = (await res.json()) as any;
-  return ((data.invoices ?? []) as any[])
-    .filter(inv => (inv.balance ?? 0) > 0)
-    .map(inv => ({
-      invoice_id: inv.invoice_id,
-      invoice_number: inv.invoice_number,
-      contact_id: inv.contact_id ?? inv.customer_id,
-      customer_name: inv.customer_name,
-      due_date: inv.due_date,
-      balance: inv.balance ?? 0,
-      currency_symbol: inv.currency_symbol ?? 'AED ',
-    }));
+  return out;
 }
 
 export async function getUpcomingDueInvoices(daysFromNow: number): Promise<OverdueInvoice[]> {
