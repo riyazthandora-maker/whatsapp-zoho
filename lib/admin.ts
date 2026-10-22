@@ -148,7 +148,8 @@ function formatTaskLines(tasks: Awaited<ReturnType<typeof getAllOpenTasks>>, sta
     const due = t.due_date
       ? ` | ${new Date(t.due_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })}`
       : '';
-    return `${startIndex + i + 1}. ${taskIcon(t.task_type)} *${taskLabel(t.task_type)}* — ${t.customer_name}\n   ${t.invoice_number} | ${fmtAED(t.amount)}${due}`;
+    const rep = t.rep_name ? ` | ${t.rep_name}` : '';
+    return `${startIndex + i + 1}. ${taskIcon(t.task_type)} *${taskLabel(t.task_type)}* — ${t.customer_name}\n   ${t.invoice_number} | ${fmtAED(t.amount)}${due}${rep}`;
   }).join('\n\n');
 }
 

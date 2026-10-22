@@ -185,6 +185,12 @@ async function dispatch(phone: string, text: string, session: Session, rep: Sale
     }
   }
 
+  // Tasks of <name> — available to all reps, not just admins
+  const tasksOfMatch = text.trim().match(/^tasks\s+of\s+(.+)$/i);
+  if (tasksOfMatch) {
+    return sendText(phone, await getAdminTasksForRep(tasksOfMatch[1].trim()));
+  }
+
   // Rep task commands (TASKS, DONE N, BROKEN N, CALL N, NOTE N <text>)
   const taskCmd = parseTaskCommand(text);
   if (taskCmd.type !== 'unknown') {
@@ -296,9 +302,10 @@ function buildTaskList(tasks: RepTask[]): string {
     const due = t.due_date
       ? ` | Due: ${new Date(t.due_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })}`
       : '';
+    const rep = t.rep_name ? ` | ${t.rep_name}` : '';
     return (
       `${i + 1}. ${taskIcon(t.task_type)} *${taskLabel(t.task_type)}* — ${t.customer_name}\n` +
-      `   ${t.invoice_number} | ${fmtAED(t.amount)}${due}`
+      `   ${t.invoice_number} | ${fmtAED(t.amount)}${due}${rep}`
     );
   });
   return (
@@ -397,6 +404,13 @@ function isStatementRequest(text: string): boolean {
   return STATEMENT_RE.test(text);
 }
 
+const CALL_REQUEST_RE =
+  /\bcall\s+me\b|\bplease\s+call\b|\bgive\s+me\s+a\s+call\b|\bi\s+want\s+(?:you\s+to\s+)?call\b|call\s+instead|اتصل\s*بي|تصل\s*بي|कॉल\s*करें|मुझे\s*कॉल/i;
+
+function isCallRequest(text: string): boolean {
+  return CALL_REQUEST_RE.test(text.trim());
+}
+
 function greetingAck(name: string | undefined): string {
   return name
     ? `Hello ${name}, thanks for your message. Our team is handling your account — let us know if there's anything specific you need.`
@@ -418,6 +432,24 @@ function handoffLine(name: string, phone: string | null, lang: string): string {
       return p
         ? `Our sales agent ${name} will contact you shortly. You can also reach them on ${p}.`
         : `Our sales agent ${name} will contact you shortly.`;
+  }
+}
+
+function callRequestedHandoffMessage(name: string, phone: string | null, lang: string): string {
+  const p = phone ?? null;
+  switch (lang) {
+    case 'ar':
+      return p
+        ? `شكرًا! سيتصل بك مندوب المبيعات ${name} قريبًا. للتواصل العاجل، يمكنك الاتصال به مباشرةً على ${p}.`
+        : `شكرًا! سيتصل بك مندوب المبيعات ${name} قريبًا.`;
+    case 'hi':
+      return p
+        ? `धन्यवाद! हमारे सेल्स प्रतिनिधि ${name} जल्द ही आपको कॉल करेंगे। अत्यावश्यक होने पर आप उन्हें ${p} पर सीधे संपर्क कर सकते हैं।`
+        : `धन्यवाद! हमारे सेल्स प्रतिनिधि ${name} जल्द ही आपको कॉल करेंगे।`;
+    default:
+      return p
+        ? `Thank you! Our sales agent ${name} will call you shortly. For urgent matters, you can reach them directly on ${p}.`
+        : `Thank you! Our sales agent ${name} will call you shortly.`;
   }
 }
 
@@ -480,6 +512,26 @@ async function handleDunningReply(
   const repInfo = commitment.assigned_rep_id ? await getRepById(commitment.assigned_rep_id) : null;
   const repName = repInfo?.name ?? 'our sales team';
   const repPhone = repInfo?.whatsapp_number ?? process.env.DUNNING_REP_PHONE ?? null;
+
+  // ── Call requested — bypass AI, thank customer, give rep's direct number ─────
+  if (isCallRequest(text)) {
+    const lastLang = [...history].reverse().find(h => h.language)?.language ?? 'en';
+    const reply = callRequestedHandoffMessage(repName, repPhone, lastLang);
+    await addConversationMessage(commitmentId, 'bot', reply, lastLang);
+    await sendText(phone, reply);
+    await updateCommitment(commitmentId, { exchange_count: exchangeCount + 1, status: 'escalated' });
+    await createRepTask({
+      rep_id: commitment.assigned_rep_id,
+      customer_zoho_id: commitment.customer_zoho_id,
+      customer_name: commitment.customer_name,
+      invoice_number: commitment.invoice_number,
+      amount: commitment.amount,
+      task_type: 'escalation',
+      note: 'Customer requested a call back',
+    });
+    await clearDunningSession(phone);
+    return;
+  }
 
   const aiResult = await manageDunningReply({
     customerName: commitment.customer_name,

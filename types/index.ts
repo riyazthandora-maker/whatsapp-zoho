@@ -88,6 +88,7 @@ export interface CommitmentRecord {
 export interface RepTask {
   id: string;
   rep_id: string | null;
+  rep_name?: string | null;
   customer_zoho_id: string;
   customer_name: string;
   invoice_number: string;
