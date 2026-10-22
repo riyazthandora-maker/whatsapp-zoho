@@ -315,3 +315,42 @@ export async function updateCommitmentByInvoice(
     .update({ ...updates, updated_at: new Date().toISOString() })
     .eq('invoice_number', invoiceNumber);
 }
+
+// ── Dunning allowlist (Supabase) ──────────────────────────────────────────────
+
+export async function getDunningFilterMode(): Promise<'allowlist' | 'all'> {
+  const { data } = await supabase
+    .from('dunning_settings')
+    .select('value')
+    .eq('key', 'filter_mode')
+    .single();
+  return (data as { value: string } | null)?.value === 'all' ? 'all' : 'allowlist';
+}
+
+export async function setDunningFilterMode(mode: 'allowlist' | 'all'): Promise<void> {
+  await supabase
+    .from('dunning_settings')
+    .upsert({ key: 'filter_mode', value: mode, updated_at: new Date().toISOString() });
+}
+
+export async function getAllowlistedPhones(): Promise<Set<string>> {
+  const { data } = await supabase
+    .from('dunning_allowlist')
+    .select('phone');
+  return new Set((data ?? []).map((r: any) => r.phone as string));
+}
+
+export async function addToAllowlist(phones: string[]): Promise<number> {
+  if (!phones.length) return 0;
+  const rows = phones.map(p => ({ phone: p }));
+  const { data, error } = await supabase
+    .from('dunning_allowlist')
+    .upsert(rows, { onConflict: 'phone', ignoreDuplicates: true })
+    .select('phone');
+  if (error) throw new Error(`addToAllowlist: ${error.message}`);
+  return (data ?? []).length;
+}
+
+export async function clearAllowlist(): Promise<void> {
+  await supabase.from('dunning_allowlist').delete().neq('phone', '');
+}

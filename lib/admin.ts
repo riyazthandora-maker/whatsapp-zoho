@@ -1,6 +1,6 @@
 import { supabase } from './supabase';
 import { syncCustomers } from './sync';
-import { getAllOpenTasks, getOpenTasksByRepName } from './dunning';
+import { getAllOpenTasks, getOpenTasksByRepName, addToAllowlist, setDunningFilterMode, clearAllowlist, getAllowlistedPhones, getDunningFilterMode, normalizePhone as normPhone } from './dunning';
 
 export type AdminCommand =
   | { type: 'add_rep'; name: string; phone: string }
@@ -10,6 +10,11 @@ export type AdminCommand =
   | { type: 'sync' }
   | { type: 'tasks' }
   | { type: 'tasks_of'; name: string }
+  | { type: 'allow_phones'; raw: string }
+  | { type: 'allow_all' }
+  | { type: 'allow_on' }
+  | { type: 'allow_status' }
+  | { type: 'allow_clear' }
   | { type: 'help' }
   | { type: 'unknown' };
 
@@ -43,6 +48,12 @@ export function parseAdminCommand(text: string): AdminCommand {
   const tasksOfMatch = t.match(/^tasks\s+of\s+(.+)$/i);
   if (tasksOfMatch) return { type: 'tasks_of', name: tasksOfMatch[1].trim() };
   if (/^tasks$/i.test(t)) return { type: 'tasks' };
+  if (/^allow\s+all$/i.test(t)) return { type: 'allow_all' };
+  if (/^allow\s+on$/i.test(t)) return { type: 'allow_on' };
+  if (/^allow\s+status$/i.test(t)) return { type: 'allow_status' };
+  if (/^allow\s+clear$/i.test(t)) return { type: 'allow_clear' };
+  const allowMatch = t.match(/^allow\s+(.+)$/i);
+  if (allowMatch) return { type: 'allow_phones', raw: allowMatch[1] };
   if (/^(admin\s+)?help$/i.test(t)) return { type: 'help' };
 
   return { type: 'unknown' };
@@ -178,6 +189,44 @@ export async function getAdminTasksForRep(name: string): Promise<string> {
   );
 }
 
+export async function addAllowedPhones(raw: string): Promise<string> {
+  const phones = raw
+    .split(',')
+    .map(s => normPhone(s.trim()))
+    .filter(p => p.length >= 7);
+
+  if (!phones.length) return 'No valid phone numbers found. Use international format, comma-separated.';
+
+  const added = await addToAllowlist(phones);
+  const mode = await getDunningFilterMode();
+  const modeNote = mode === 'all' ? '\n\n_Note: filter is currently OFF (allow all). Send *ALLOW STATUS* to check._' : '';
+  return `✅ Added ${added} phone(s) to the dunning allowlist (${phones.length - added} already existed).${modeNote}`;
+}
+
+export async function setAllowAll(): Promise<string> {
+  await setDunningFilterMode('all');
+  return '🌐 Dunning filter disabled. Messages will be sent to *all* customers.';
+}
+
+export async function setAllowList(): Promise<string> {
+  await setDunningFilterMode('allowlist');
+  const phones = await getAllowlistedPhones();
+  return `🔒 Dunning filter enabled. Messages will only be sent to *${phones.size}* phone(s) in the allowlist.`;
+}
+
+export async function getAllowStatus(): Promise<string> {
+  const [mode, phones] = await Promise.all([getDunningFilterMode(), getAllowlistedPhones()]);
+  const modeLabel = mode === 'all' ? '🌐 *Filter OFF* — sending to all customers' : `🔒 *Filter ON* — allowlist (${phones.size} phones)`;
+  if (!phones.size) return `${modeLabel}\n\n_Allowlist is empty._`;
+  const list = [...phones].sort().map(p => `• ${p}`).join('\n');
+  return `${modeLabel}\n\n${list}`;
+}
+
+export async function clearAllowedPhones(): Promise<string> {
+  await clearAllowlist();
+  return '🗑️ Allowlist cleared. Add phones with *ALLOW <number>, <number>, ...*';
+}
+
 export const ADMIN_HELP =
   `*Admin Commands*\n\n` +
   `• \`add rep <Name>, <+phone>\` — Register a new rep\n` +
@@ -187,6 +236,12 @@ export const ADMIN_HELP =
   `• \`sync\` — Refresh Zoho customer list now\n` +
   `• \`tasks\` — View all open collection tasks (max 25)\n` +
   `• \`tasks of <name>\` — View tasks for a specific rep\n\n` +
+  `*Dunning Filter*\n\n` +
+  `• \`allow <+971...>, <+971...>\` — Add phones to allowlist\n` +
+  `• \`allow all\` — Disable filter, send to all customers\n` +
+  `• \`allow on\` — Re-enable the allowlist filter\n` +
+  `• \`allow status\` — Show current filter mode + allowlist\n` +
+  `• \`allow clear\` — Wipe the allowlist\n\n` +
   `*Rep Commands*\n\n` +
   `• \`Stock <product>\` — Show stock for matching products\n` +
   `• \`TASKS\` — View your open tasks\n` +

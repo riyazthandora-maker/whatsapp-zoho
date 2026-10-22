@@ -10,6 +10,8 @@ import {
   createRepTask,
   normalizePhone,
   getEffectiveRepIds,
+  getDunningFilterMode,
+  getAllowlistedPhones,
 } from '../lib/dunning';
 import type { CommitmentRecord } from '../types';
 
@@ -18,13 +20,6 @@ const COMPANY = () => process.env.COMPANY_NAME || 'Our Company';
 // Commitments in these states must never be re-messaged
 const TERMINAL_STATUSES = new Set(['committed', 'collected', 'broken', 'escalated', 'declined']);
 
-// Testing filter — clear this array to run for all customers
-const TEST_CUSTOMERS = [
-  'FAVOURITE BUILDING MATERIAL LLC',
-  'HABSHAN ELECT.&SANITARY WARE TR.',
-  'MEDIA BUILDING MATERIAL TRADING LLC',
-  'BAB AL QAMAR ELECT.& SANITARYLLC',
-];
 
 const fmtAmount = (n: number) =>
   n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -82,10 +77,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   const dryRun = false;
-  const customerFilter = TEST_CUSTOMERS.length > 0
-    ? TEST_CUSTOMERS.map(s => s.toUpperCase())
-    : null;
   const t0 = Date.now();
+
+  const [filterMode, allowedPhones] = await Promise.all([
+    getDunningFilterMode(),
+    getAllowlistedPhones(),
+  ]);
+  const phoneFilterActive = filterMode === 'allowlist' && allowedPhones.size > 0;
   let sent = 0;
   let advanced = 0;
   let finalized = 0;
@@ -96,8 +94,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   let overdueCustomerNames = new Set<string>();
   try {
     const overdueAll = await getOverdueInvoices();
-    const filteredOD = customerFilter
-      ? overdueAll.filter(i => customerFilter.includes(i.customer_name.toUpperCase()))
+    const overduePhonesPre = await getPhonesByContactIds(overdueAll.map(i => i.contact_id));
+    const filteredOD = phoneFilterActive
+      ? overdueAll.filter(i => allowedPhones.has(overduePhonesPre.get(i.contact_id) ?? ''))
       : overdueAll;
     filteredOD.forEach(i => overdueCustomerNames.add(i.customer_name.trim().toUpperCase()));
   } catch { /* non-fatal — advance step will just send to everyone */ }
@@ -106,10 +105,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     console.log('[send-dunning] fetching upcoming invoices...');
     const upcoming = await getUpcomingDueInvoices(7);
-    const filteredUpcoming = customerFilter
-      ? upcoming.filter(i => customerFilter.includes(i.customer_name.toUpperCase()))
-            .filter(i => !overdueCustomerNames.has(i.customer_name.trim().toUpperCase()))
-      : upcoming.filter(i => !overdueCustomerNames.has(i.customer_name.trim().toUpperCase()));
+    const filteredUpcoming = upcoming.filter(
+      i => !overdueCustomerNames.has(i.customer_name.trim().toUpperCase())
+    );
     console.log(`[send-dunning] upcoming=${upcoming.length} filtered=${filteredUpcoming.length}`);
 
     const upcomingCommitments = await getCommitmentsByInvoices(filteredUpcoming.map(i => i.invoice_number));
@@ -122,6 +120,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         if (!newInvoices.length) continue;
         const phone = upcomingPhones.get(newInvoices[0].contact_id);
         if (!phone) continue;
+        if (phoneFilterActive && !allowedPhones.has(phone)) continue;
 
         const total = newInvoices.reduce((s, i) => s + i.balance, 0);
         const invStr = invoiceList(newInvoices);
@@ -161,17 +160,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     console.log('[send-dunning] fetching overdue invoices...');
     const overdue = await getOverdueInvoices();
-    const filteredOverdue = customerFilter
-      ? overdue.filter(i => customerFilter.includes(i.customer_name.toUpperCase()))
-      : overdue;
-    overdueCustomerNames = new Set(filteredOverdue.map(i => i.customer_name.trim().toUpperCase()));
-    console.log(`[send-dunning] overdue=${overdue.length} filtered=${filteredOverdue.length}`);
+    overdueCustomerNames = new Set(overdue.map(i => i.customer_name.trim().toUpperCase()));
+    console.log(`[send-dunning] overdue=${overdue.length}`);
 
-    const overdueCommitments = await getCommitmentsByInvoices(filteredOverdue.map(i => i.invoice_number));
-    const overduePhones = await getPhonesByContactIds(filteredOverdue.map(i => i.contact_id));
-    const overdueReps = await getEffectiveRepIds(filteredOverdue.map(i => i.contact_id));
+    const overdueCommitments = await getCommitmentsByInvoices(overdue.map(i => i.invoice_number));
+    const overduePhones = await getPhonesByContactIds(overdue.map(i => i.contact_id));
+    const overdueReps = await getEffectiveRepIds(overdue.map(i => i.contact_id));
 
-    for (const [, group] of groupByCustomer(filteredOverdue)) {
+    for (const [, group] of groupByCustomer(overdue)) {
       try {
         const actionable = group.filter(i => {
           const c = overdueCommitments.get(i.invoice_number);
@@ -182,6 +178,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         if (!actionable.length) continue;
         const phone = overduePhones.get(actionable[0].contact_id);
         if (!phone) continue;
+        if (phoneFilterActive && !allowedPhones.has(phone)) continue;
 
         const total = actionable.reduce((s, i) => s + i.balance, 0);
         const invStr = invoiceList(actionable);

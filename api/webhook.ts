@@ -21,6 +21,11 @@ import {
   runSync,
   getAdminTasks,
   getAdminTasksForRep,
+  addAllowedPhones,
+  setAllowAll,
+  setAllowList,
+  getAllowStatus,
+  clearAllowedPhones,
   ADMIN_HELP,
 } from '../lib/admin';
 import {
@@ -224,8 +229,13 @@ async function handleAdminCommand(phone: string, cmd: ReturnType<typeof parseAdm
     case 'remove_rep': return sendText(phone, await removeRep(cmd.phone));
     case 'list_reps': return sendText(phone, await listReps());
     case 'audit':     return sendText(phone, await getRecentAudit(cmd.limit));
-    case 'tasks':     return sendText(phone, await getAdminTasks());
-    case 'tasks_of':  return sendText(phone, await getAdminTasksForRep(cmd.name));
+    case 'tasks':        return sendText(phone, await getAdminTasks());
+    case 'tasks_of':     return sendText(phone, await getAdminTasksForRep(cmd.name));
+    case 'allow_phones': return sendText(phone, await addAllowedPhones(cmd.raw));
+    case 'allow_all':    return sendText(phone, await setAllowAll());
+    case 'allow_on':     return sendText(phone, await setAllowList());
+    case 'allow_status': return sendText(phone, await getAllowStatus());
+    case 'allow_clear':  return sendText(phone, await clearAllowedPhones());
     case 'sync': {
       await sendText(phone, 'Syncing customers from Zoho...');
       return sendText(phone, await runSync());
