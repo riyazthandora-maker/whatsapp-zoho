@@ -42,10 +42,8 @@ import {
   addConversationMessage,
   getConversationHistory,
   createRepTask,
-  getOpenRepTasks,
   getTaskById,
   getTaskList,
-  setTaskList,
   updateRepTask,
   normalizePhone,
 } from '../lib/dunning';
@@ -331,14 +329,7 @@ async function handleTaskCommand(
   repId: string
 ) {
   if (cmd.type === 'tasks') {
-    const tasks = await getOpenRepTasks(repId);
-    if (!tasks.length) {
-      await sendText(phone, 'No open tasks right now. 🎉');
-      return;
-    }
-    await setTaskList(phone, tasks.map(t => t.id));
-    await sendText(phone, buildTaskList(tasks));
-    return;
+    return sendText(phone, await getAdminTasks());
   }
 
   const taskList = await getTaskList(phone);
