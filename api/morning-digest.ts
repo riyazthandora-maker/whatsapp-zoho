@@ -35,7 +35,7 @@ function buildDigest(repName: string, tasks: RepTask[]): string {
     `Good morning *${repName}*! 👋\n\n` +
     `*Your Open Tasks (${tasks.length})*\n\n` +
     `${lines.join('\n\n')}\n\n` +
-    `_Commands: *DONE 1*, *BROKEN 1*, *CALL 1*, *NOTE 1 <text>*, *TASKS*_`
+    `_Commands: *DONE 1* or *DONE 1,2,3*, *BROKEN 1*, *CALL 1*, *NOTE 1 <text>*, *TASKS*_`
   );
 }
 

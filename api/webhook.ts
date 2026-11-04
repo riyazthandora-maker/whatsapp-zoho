@@ -44,6 +44,8 @@ import {
   createRepTask,
   getTaskById,
   getTaskList,
+  setTaskList,
+  getOpenRepTasks,
   updateRepTask,
   normalizePhone,
 } from '../lib/dunning';
@@ -246,7 +248,7 @@ async function handleAdminCommand(phone: string, cmd: ReturnType<typeof parseAdm
 
 type TaskCommand =
   | { type: 'tasks' }
-  | { type: 'done';   index: number }
+  | { type: 'done';   indices: number[] }
   | { type: 'broken'; index: number }
   | { type: 'call';   index: number }
   | { type: 'note';   index: number; text: string }
@@ -278,8 +280,11 @@ function parseTaskCommand(text: string): TaskCommand {
   const t = text.trim();
   if (/^tasks$/i.test(t)) return { type: 'tasks' };
 
-  const doneMatch   = t.match(/^done\s+(\d+)$/i);
-  if (doneMatch)   return { type: 'done',   index: parseInt(doneMatch[1], 10) };
+  const doneMatch = t.match(/^done\s+([\d,\s]+)$/i);
+  if (doneMatch) {
+    const indices = doneMatch[1].split(',').map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n) && n > 0);
+    if (indices.length) return { type: 'done', indices };
+  }
 
   const brokenMatch = t.match(/^broken\s+(\d+)$/i);
   if (brokenMatch) return { type: 'broken', index: parseInt(brokenMatch[1], 10) };
@@ -311,15 +316,16 @@ function buildTaskList(tasks: RepTask[]): string {
       ? ` | Due: ${new Date(t.due_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short' })}`
       : '';
     const rep = t.rep_name ? ` | ${t.rep_name}` : '';
+    const note = t.note ? `\n   _${t.note}_` : '';
     return (
       `${i + 1}. ${taskIcon(t.task_type)} *${taskLabel(t.task_type)}* — ${t.customer_name}\n` +
-      `   ${t.invoice_number} | ${fmtAED(t.amount)}${due}${rep}`
+      `   ${t.invoice_number} | ${fmtAED(t.amount)}${due}${rep}${note}`
     );
   });
   return (
     `*Your Open Tasks (${tasks.length})*\n\n` +
     `${lines.join('\n\n')}\n\n` +
-    `_Commands: *DONE 1*, *BROKEN 1*, *COMMIT 1 15 Nov*, *CALL 1*, *NOTE 1 <text>*_`
+    `_Commands: *DONE 1* or *DONE 1,2,3*, *BROKEN 1*, *COMMIT 1 15 Nov*, *CALL 1*, *NOTE 1 <text>*_`
   );
 }
 
@@ -329,12 +335,35 @@ async function handleTaskCommand(
   repId: string
 ) {
   if (cmd.type === 'tasks') {
-    return sendText(phone, await getAdminTasks());
+    const tasks = await getOpenRepTasks(repId);
+    if (!tasks.length) return sendText(phone, 'You have no open tasks right now.');
+    await setTaskList(phone, tasks.map(t => t.id));
+    return sendText(phone, buildTaskList(tasks));
   }
 
   const taskList = await getTaskList(phone);
   if (!taskList?.length) {
     await sendText(phone, 'No task list cached. Send *TASKS* first to load your tasks.');
+    return;
+  }
+
+  // Multi-close: DONE 1,2,3
+  if (cmd.type === 'done') {
+    const invalid = cmd.indices.filter(n => n < 1 || n > taskList.length);
+    if (invalid.length) {
+      await sendText(phone, `Invalid number(s): ${invalid.join(', ')}. You have ${taskList.length} task(s).`);
+      return;
+    }
+    const results: string[] = [];
+    for (const n of cmd.indices) {
+      const tid = taskList[n - 1];
+      const task = await getTaskById(tid);
+      if (!task) { results.push(`${n}. not found`); continue; }
+      await updateRepTask(tid, { status: 'done' });
+      await updateCommitmentStatus(task.invoice_number, 'collected');
+      results.push(`${n}. ✅ ${task.customer_name}`);
+    }
+    await sendText(phone, `*Tasks marked collected:*\n${results.join('\n')}`);
     return;
   }
 
@@ -352,12 +381,6 @@ async function handleTaskCommand(
   }
 
   switch (cmd.type) {
-    case 'done':
-      await updateRepTask(taskId, { status: 'done' });
-      await updateCommitmentStatus(task.invoice_number, 'collected');
-      await sendText(phone, `✅ Task ${cmd.index} (*${task.customer_name}*) marked as collected.`);
-      break;
-
     case 'broken':
       await updateRepTask(taskId, { status: 'broken' });
       await updateCommitmentStatus(task.invoice_number, 'broken');
