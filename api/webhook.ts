@@ -47,6 +47,7 @@ import {
   getTaskList,
   setTaskList,
   getOpenRepTasks,
+  getAllOpenTasks,
   updateRepTask,
   normalizePhone,
 } from '../lib/dunning';
@@ -197,10 +198,10 @@ async function dispatch(phone: string, text: string, session: Session, rep: Sale
     return sendText(phone, await getAdminTasksForRep(tasksOfMatch[1].trim()));
   }
 
-  // Rep report command
+  // Rep / collector report command
   if (/^report$/i.test(text.trim())) {
     await sendText(phone, '⏳ Generating report...');
-    const buf = await generateReportPdf(rep.id);
+    const buf = await generateReportPdf(rep.role === 'collector' ? undefined : rep.id);
     const date = new Date().toISOString().split('T')[0];
     const mediaId = await uploadMedia(buf, `report-${date}.pdf`);
     return sendDocument(phone, mediaId, `My Report ${date}.pdf`, 'Your last 30 days — commitments & tasks');
@@ -209,7 +210,7 @@ async function dispatch(phone: string, text: string, session: Session, rep: Sale
   // Rep task commands (TASKS, DONE N, BROKEN N, CALL N, NOTE N <text>)
   const taskCmd = parseTaskCommand(text);
   if (taskCmd.type !== 'unknown') {
-    return handleTaskCommand(phone, taskCmd, rep.id);
+    return handleTaskCommand(phone, taskCmd, rep.id, rep.role);
   }
 
   // Stock command
@@ -235,7 +236,7 @@ async function dispatch(phone: string, text: string, session: Session, rep: Sale
 
 async function handleAdminCommand(phone: string, cmd: ReturnType<typeof parseAdminCommand>) {
   switch (cmd.type) {
-    case 'add_rep':   return sendText(phone, await addRep(cmd.name, cmd.phone));
+    case 'add_rep':   return sendText(phone, await addRep(cmd.name, cmd.phone, cmd.role));
     case 'remove_rep': return sendText(phone, await removeRep(cmd.phone));
     case 'list_reps': return sendText(phone, await listReps());
     case 'audit':     return sendText(phone, await getRecentAudit(cmd.limit));
@@ -349,11 +350,14 @@ function buildTaskList(tasks: RepTask[]): string {
 async function handleTaskCommand(
   phone: string,
   cmd: Exclude<TaskCommand, { type: 'unknown' }>,
-  repId: string
+  repId: string,
+  role: SalesRep['role'] = 'rep'
 ) {
   if (cmd.type === 'tasks') {
-    const tasks = await getOpenRepTasks(repId);
-    if (!tasks.length) return sendText(phone, 'You have no open tasks right now.');
+    const tasks = role === 'collector'
+      ? await getAllOpenTasks()
+      : await getOpenRepTasks(repId);
+    if (!tasks.length) return sendText(phone, 'No open tasks right now.');
     await setTaskList(phone, tasks.map(t => t.id));
     return sendText(phone, buildTaskList(tasks));
   }

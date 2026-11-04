@@ -4,7 +4,7 @@ import { syncCustomers } from './sync';
 import { getAllOpenTasks, getOpenTasksByRepName, addToAllowlist, setDunningFilterMode, clearAllowlist, getAllowlistedPhones, getDunningFilterMode, normalizePhone as normPhone } from './dunning';
 
 export type AdminCommand =
-  | { type: 'add_rep'; name: string; phone: string }
+  | { type: 'add_rep'; name: string; phone: string; role: 'rep' | 'collector' }
   | { type: 'remove_rep'; phone: string }
   | { type: 'list_reps' }
   | { type: 'audit'; limit: number }
@@ -23,13 +23,14 @@ export type AdminCommand =
 export function parseAdminCommand(text: string): AdminCommand {
   const t = text.trim();
 
-  // add rep <Name>, <phone>
-  const addMatch = t.match(/^add\s+rep\s+(.+),\s*(\+?\d[\d\s\-()+]{6,})/i);
+  // add rep / add collector <Name>, <phone>
+  const addMatch = t.match(/^add\s+(rep|collector)\s+(.+),\s*(\+?\d[\d\s\-()+]{6,})/i);
   if (addMatch) {
     return {
       type: 'add_rep',
-      name: addMatch[1].trim(),
-      phone: normalizePhone(addMatch[2]),
+      role: addMatch[1].toLowerCase() as 'rep' | 'collector',
+      name: addMatch[2].trim(),
+      phone: normalizePhone(addMatch[3]),
     };
   }
 
@@ -66,17 +67,18 @@ function normalizePhone(raw: string): string {
   return raw.replace(/[\s\-()]/g, '');
 }
 
-export async function addRep(name: string, phone: string): Promise<string> {
+export async function addRep(name: string, phone: string, role: 'rep' | 'collector' = 'rep'): Promise<string> {
   const { error } = await supabase
     .from('sales_reps')
-    .insert({ name, whatsapp_number: phone, role: 'rep', is_active: true });
+    .insert({ name, whatsapp_number: phone, role, is_active: true });
 
   if (error) {
     if (error.code === '23505') return `${phone} is already registered.`;
     return `Failed to add rep: ${error.message}`;
   }
 
-  return `Added *${name}* (${phone}) as a sales rep.`;
+  const label = role === 'collector' ? 'collector' : 'sales rep';
+  return `Added *${name}* (${phone}) as a ${label}.`;
 }
 
 export async function removeRep(phone: string): Promise<string> {
@@ -338,7 +340,8 @@ export async function generateReportPdf(repId?: string): Promise<Buffer> {
 
 export const ADMIN_HELP =
   `*Admin Commands*\n\n` +
-  `• \`add rep <Name>, <+phone>\` — Register a new rep\n` +
+  `• \`add rep <Name>, <+phone>\` — Register a new rep (role: rep)\n` +
+  `• \`add collector <Name>, <+phone>\` — Register a collector (sees & closes all tasks)\n` +
   `• \`remove rep <+phone>\` — Deactivate a rep\n` +
   `• \`list reps\` — Show all reps\n` +
   `• \`audit [N]\` — Last N requests (default 10)\n` +
