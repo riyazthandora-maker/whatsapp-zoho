@@ -26,6 +26,7 @@ import {
   setAllowList,
   getAllowStatus,
   clearAllowedPhones,
+  generateReportPdf,
   ADMIN_HELP,
 } from '../lib/admin';
 import {
@@ -196,6 +197,15 @@ async function dispatch(phone: string, text: string, session: Session, rep: Sale
     return sendText(phone, await getAdminTasksForRep(tasksOfMatch[1].trim()));
   }
 
+  // Rep report command
+  if (/^report$/i.test(text.trim())) {
+    await sendText(phone, '⏳ Generating report...');
+    const buf = await generateReportPdf(rep.id);
+    const date = new Date().toISOString().split('T')[0];
+    const mediaId = await uploadMedia(buf, `report-${date}.pdf`);
+    return sendDocument(phone, mediaId, `My Report ${date}.pdf`, 'Your last 30 days — commitments & tasks');
+  }
+
   // Rep task commands (TASKS, DONE N, BROKEN N, CALL N, NOTE N <text>)
   const taskCmd = parseTaskCommand(text);
   if (taskCmd.type !== 'unknown') {
@@ -239,6 +249,13 @@ async function handleAdminCommand(phone: string, cmd: ReturnType<typeof parseAdm
     case 'sync': {
       await sendText(phone, 'Syncing customers from Zoho...');
       return sendText(phone, await runSync());
+    }
+    case 'report': {
+      await sendText(phone, '⏳ Generating report...');
+      const buf = await generateReportPdf();
+      const date = new Date().toISOString().split('T')[0];
+      const mediaId = await uploadMedia(buf, `report-${date}.pdf`);
+      return sendDocument(phone, mediaId, `Collection Report ${date}.pdf`, 'Last 30 days — commitments & tasks');
     }
     case 'help': return sendText(phone, ADMIN_HELP);
   }

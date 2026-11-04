@@ -1,3 +1,4 @@
+import PDFDocument from 'pdfkit';
 import { supabase } from './supabase';
 import { syncCustomers } from './sync';
 import { getAllOpenTasks, getOpenTasksByRepName, addToAllowlist, setDunningFilterMode, clearAllowlist, getAllowlistedPhones, getDunningFilterMode, normalizePhone as normPhone } from './dunning';
@@ -15,6 +16,7 @@ export type AdminCommand =
   | { type: 'allow_on' }
   | { type: 'allow_status' }
   | { type: 'allow_clear' }
+  | { type: 'report' }
   | { type: 'help' }
   | { type: 'unknown' };
 
@@ -54,6 +56,7 @@ export function parseAdminCommand(text: string): AdminCommand {
   if (/^allow\s+clear$/i.test(t)) return { type: 'allow_clear' };
   const allowMatch = t.match(/^allow\s+(.+)$/i);
   if (allowMatch) return { type: 'allow_phones', raw: allowMatch[1] };
+  if (/^report$/i.test(t)) return { type: 'report' };
   if (/^(admin\s+)?help$/i.test(t)) return { type: 'help' };
 
   return { type: 'unknown' };
@@ -227,6 +230,112 @@ export async function clearAllowedPhones(): Promise<string> {
   return '🗑️ Allowlist cleared. Add phones with *ALLOW <number>, <number>, ...*';
 }
 
+const fmtDate = (s: string) =>
+  new Date(s).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+
+type CommRow = {
+  customer_name: string; invoice_number: string; amount: number;
+  status: string; committed_date: string | null; created_at: string;
+  sales_reps: { name: string }[] | null;
+};
+type TaskRow = {
+  customer_name: string; invoice_number: string; amount: number;
+  task_type: string; status: string; note: string | null;
+  due_date: string | null; created_at: string;
+  sales_reps: { name: string }[] | null;
+};
+
+export async function generateReportPdf(repId?: string): Promise<Buffer> {
+  const since = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+
+  let cQuery = supabase
+    .from('collection_commitments')
+    .select('customer_name, invoice_number, amount, status, committed_date, created_at, sales_reps(name)')
+    .gte('created_at', since)
+    .order('created_at', { ascending: false });
+
+  let tQuery = supabase
+    .from('rep_tasks')
+    .select('customer_name, invoice_number, amount, task_type, status, note, due_date, created_at, sales_reps(name)')
+    .gte('created_at', since)
+    .order('created_at', { ascending: false });
+
+  if (repId) {
+    cQuery = cQuery.eq('assigned_rep_id', repId);
+    tQuery = tQuery.eq('rep_id', repId);
+  }
+
+  const [{ data: rawC }, { data: rawT }] = await Promise.all([cQuery, tQuery]);
+  const commitments = (rawC ?? []) as CommRow[];
+  const tasks = (rawT ?? []) as TaskRow[];
+
+  const since30 = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
+    .toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+  const today = new Date().toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+
+  return new Promise((resolve, reject) => {
+    const doc = new PDFDocument({ margin: 50, size: 'A4' });
+    const chunks: Buffer[] = [];
+    doc.on('data', (c: Buffer) => chunks.push(c));
+    doc.on('end', () => resolve(Buffer.concat(chunks)));
+    doc.on('error', reject);
+
+    const lineWidth = doc.page.width - 100;
+
+    // ── Header ────────────────────────────────────────────────────────────────
+    doc.fontSize(20).font('Helvetica-Bold').text('Collection Report', { align: 'center' });
+    doc.fontSize(10).font('Helvetica').fillColor('#555555')
+      .text(`${since30} – ${today}`, { align: 'center' });
+    doc.fillColor('#000000').moveDown(1.5);
+
+    // ── Section 1: Commitments ────────────────────────────────────────────────
+    doc.fontSize(13).font('Helvetica-Bold').text(`Collection Commitments (${commitments.length})`);
+    doc.moveTo(50, doc.y + 2).lineTo(50 + lineWidth, doc.y + 2).strokeColor('#cccccc').stroke().moveDown(0.6);
+
+    if (!commitments.length) {
+      doc.fontSize(10).font('Helvetica').fillColor('#888888').text('No commitments in this period.').fillColor('#000000').moveDown();
+    } else {
+      for (const c of commitments) {
+        doc.fontSize(10).font('Helvetica-Bold').fillColor('#000000')
+          .text(`${c.customer_name}  ·  ${c.invoice_number}`);
+        doc.font('Helvetica').fillColor('#333333')
+          .text(`${fmtAED(c.amount)}  |  ${c.status.toUpperCase()}  |  Rep: ${c.sales_reps?.[0]?.name ?? '—'}`);
+        const extra: string[] = [`Created: ${fmtDate(c.created_at)}`];
+        if (c.committed_date) extra.push(`Committed: ${fmtDate(c.committed_date)}`);
+        doc.text(extra.join('  |  '));
+        doc.fillColor('#000000').moveDown(0.6);
+      }
+    }
+
+    doc.moveDown(0.8);
+
+    // ── Section 2: Tasks ──────────────────────────────────────────────────────
+    doc.fontSize(13).font('Helvetica-Bold').fillColor('#000000').text(`Rep Tasks (${tasks.length})`);
+    doc.moveTo(50, doc.y + 2).lineTo(50 + lineWidth, doc.y + 2).strokeColor('#cccccc').stroke().moveDown(0.6);
+
+    if (!tasks.length) {
+      doc.fontSize(10).font('Helvetica').fillColor('#888888').text('No tasks in this period.').fillColor('#000000').moveDown();
+    } else {
+      const typeLabel = (t: string) =>
+        t === 'collection' ? 'Collect Cheque' : t === 'escalation' ? 'Escalation' : 'Follow Up';
+
+      for (const t of tasks) {
+        doc.fontSize(10).font('Helvetica-Bold').fillColor('#000000')
+          .text(`${t.customer_name}  ·  ${t.invoice_number}`);
+        doc.font('Helvetica').fillColor('#333333')
+          .text(`${fmtAED(t.amount)}  |  ${typeLabel(t.task_type)}  |  ${t.status.toUpperCase()}  |  Rep: ${t.sales_reps?.[0]?.name ?? '—'}`);
+        if (t.note) doc.text(`Note: ${t.note}`);
+        const extra: string[] = [`Created: ${fmtDate(t.created_at)}`];
+        if (t.due_date) extra.push(`Due: ${fmtDate(t.due_date)}`);
+        doc.text(extra.join('  |  '));
+        doc.fillColor('#000000').moveDown(0.6);
+      }
+    }
+
+    doc.end();
+  });
+}
+
 export const ADMIN_HELP =
   `*Admin Commands*\n\n` +
   `• \`add rep <Name>, <+phone>\` — Register a new rep\n` +
@@ -235,7 +344,8 @@ export const ADMIN_HELP =
   `• \`audit [N]\` — Last N requests (default 10)\n` +
   `• \`sync\` — Refresh Zoho customer list now\n` +
   `• \`tasks\` — View all open collection tasks (max 25)\n` +
-  `• \`tasks of <name>\` — View tasks for a specific rep\n\n` +
+  `• \`tasks of <name>\` — View tasks for a specific rep\n` +
+  `• \`report\` — PDF report: last 30 days commitments & tasks\n\n` +
   `*Dunning Filter*\n\n` +
   `• \`allow <+971...>, <+971...>\` — Add phones to allowlist\n` +
   `• \`allow all\` — Disable filter, send to all customers\n` +
