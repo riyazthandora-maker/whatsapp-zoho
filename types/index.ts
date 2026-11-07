@@ -20,7 +20,7 @@ export interface SalesRep {
   name: string;
   whatsapp_number: string;
   is_active: boolean;
-  role: 'rep' | 'admin' | 'collector';
+  role: 'rep' | 'admin';
 }
 
 export interface ZohoCustomer {

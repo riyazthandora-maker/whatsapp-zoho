@@ -4,7 +4,7 @@ import { syncCustomers } from './sync';
 import { getAllOpenTasks, getOpenTasksByRepName, addToAllowlist, setDunningFilterMode, clearAllowlist, getAllowlistedPhones, getDunningFilterMode, normalizePhone as normPhone } from './dunning';
 
 export type AdminCommand =
-  | { type: 'add_rep'; name: string; phone: string; role: 'rep' | 'collector' }
+  | { type: 'add_rep'; name: string; phone: string }
   | { type: 'remove_rep'; phone: string }
   | { type: 'list_reps' }
   | { type: 'audit'; limit: number }
@@ -16,21 +16,19 @@ export type AdminCommand =
   | { type: 'allow_on' }
   | { type: 'allow_status' }
   | { type: 'allow_clear' }
-  | { type: 'report' }
   | { type: 'help' }
   | { type: 'unknown' };
 
 export function parseAdminCommand(text: string): AdminCommand {
   const t = text.trim();
 
-  // add rep / add collector <Name>, <phone>
-  const addMatch = t.match(/^add\s+(rep|collector)\s+(.+),\s*(\+?\d[\d\s\-()+]{6,})/i);
+  // add rep <Name>, <phone>
+  const addMatch = t.match(/^add\s+rep\s+(.+),\s*(\+?\d[\d\s\-()+]{6,})/i);
   if (addMatch) {
     return {
       type: 'add_rep',
-      role: addMatch[1].toLowerCase() as 'rep' | 'collector',
-      name: addMatch[2].trim(),
-      phone: normalizePhone(addMatch[3]),
+      name: addMatch[1].trim(),
+      phone: normalizePhone(addMatch[2]),
     };
   }
 
@@ -57,7 +55,6 @@ export function parseAdminCommand(text: string): AdminCommand {
   if (/^allow\s+clear$/i.test(t)) return { type: 'allow_clear' };
   const allowMatch = t.match(/^allow\s+(.+)$/i);
   if (allowMatch) return { type: 'allow_phones', raw: allowMatch[1] };
-  if (/^report$/i.test(t)) return { type: 'report' };
   if (/^(admin\s+)?help$/i.test(t)) return { type: 'help' };
 
   return { type: 'unknown' };
@@ -67,18 +64,17 @@ function normalizePhone(raw: string): string {
   return raw.replace(/[\s\-()]/g, '');
 }
 
-export async function addRep(name: string, phone: string, role: 'rep' | 'collector' = 'rep'): Promise<string> {
+export async function addRep(name: string, phone: string): Promise<string> {
   const { error } = await supabase
     .from('sales_reps')
-    .insert({ name, whatsapp_number: phone, role, is_active: true });
+    .insert({ name, whatsapp_number: phone, role: 'rep', is_active: true });
 
   if (error) {
     if (error.code === '23505') return `${phone} is already registered.`;
     return `Failed to add rep: ${error.message}`;
   }
 
-  const label = role === 'collector' ? 'collector' : 'sales rep';
-  return `Added *${name}* (${phone}) as a ${label}.`;
+  return `Added *${name}* (${phone}) as a sales rep.`;
 }
 
 export async function removeRep(phone: string): Promise<string> {
@@ -340,15 +336,14 @@ export async function generateReportPdf(repId?: string): Promise<Buffer> {
 
 export const ADMIN_HELP =
   `*Admin Commands*\n\n` +
-  `• \`add rep <Name>, <+phone>\` — Register a new rep (role: rep)\n` +
-  `• \`add collector <Name>, <+phone>\` — Register a collector (sees & closes all tasks)\n` +
+  `• \`add rep <Name>, <+phone>\` — Register a new rep\n` +
   `• \`remove rep <+phone>\` — Deactivate a rep\n` +
   `• \`list reps\` — Show all reps\n` +
   `• \`audit [N]\` — Last N requests (default 10)\n` +
   `• \`sync\` — Refresh Zoho customer list now\n` +
   `• \`tasks\` — View all open collection tasks (max 25)\n` +
   `• \`tasks of <name>\` — View tasks for a specific rep\n` +
-  `• \`report\` — PDF report: last 30 days commitments & tasks\n\n` +
+  `• \`report\` — PDF: last 30 days commitments & tasks (available to all)\n\n` +
   `*Dunning Filter*\n\n` +
   `• \`allow <+971...>, <+971...>\` — Add phones to allowlist\n` +
   `• \`allow all\` — Disable filter, send to all customers\n` +
