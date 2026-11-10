@@ -2,6 +2,7 @@ import PDFDocument from 'pdfkit';
 import { supabase } from './supabase';
 import { syncCustomers } from './sync';
 import { getAllOpenTasks, getOpenTasksByRepName, addToAllowlist, setDunningFilterMode, clearAllowlist, getAllowlistedPhones, getDunningFilterMode, normalizePhone as normPhone } from './dunning';
+import { runDunningJob } from './dunning-runner';
 
 export type AdminCommand =
   | { type: 'add_rep'; name: string; phone: string }
@@ -9,6 +10,7 @@ export type AdminCommand =
   | { type: 'list_reps' }
   | { type: 'audit'; limit: number }
   | { type: 'sync' }
+  | { type: 'run_dunning' }
   | { type: 'tasks' }
   | { type: 'tasks_of'; name: string }
   | { type: 'allow_phones'; raw: string }
@@ -46,6 +48,7 @@ export function parseAdminCommand(text: string): AdminCommand {
   }
 
   if (/^sync$/i.test(t)) return { type: 'sync' };
+  if (/^run\s+dunning$/i.test(t)) return { type: 'run_dunning' };
   const tasksOfMatch = t.match(/^tasks\s+of\s+(.+)$/i);
   if (tasksOfMatch) return { type: 'tasks_of', name: tasksOfMatch[1].trim() };
   if (/^tasks$/i.test(t)) return { type: 'tasks' };
@@ -150,6 +153,32 @@ export async function runSync(): Promise<string> {
   }
 }
 
+export async function triggerDunningRun(): Promise<string> {
+  try {
+    const r = await runDunningJob();
+    const lines: string[] = [
+      `*Dunning run complete* (${r.elapsed_ms}ms)`,
+      `• Sent: ${r.sent}  |  Advanced: ${r.advanced}  |  Finalized: ${r.finalized}`,
+    ];
+    if (r.preview.length) {
+      lines.push('', '*Messages sent:*');
+      r.preview.forEach(p => lines.push(`  ${p}`));
+    }
+    if (r.errors.length) {
+      lines.push('', `⚠️ *Errors (${r.errors.length}):*`);
+      r.errors.slice(0, 5).forEach(e => lines.push(`  ${e}`));
+      if (r.errors.length > 5) lines.push(`  ...and ${r.errors.length - 5} more`);
+    }
+    if (!r.sent && !r.advanced && !r.finalized) {
+      lines.push('', '_No messages sent — no eligible customers at this time._');
+    }
+    return lines.join('\n');
+  } catch (err: any) {
+    console.error('Admin run-dunning error:', err);
+    return `Dunning run failed: ${err?.message ?? 'unknown error'}`;
+  }
+}
+
 const fmtAED = (n: number) =>
   `AED ${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const taskIcon = (t: string) => t === 'collection' ? '📞' : t === 'escalation' ? '🚨' : '🔔';
@@ -233,14 +262,14 @@ const fmtDate = (s: string) =>
 
 type CommRow = {
   customer_name: string; invoice_number: string; amount: number;
-  status: string; committed_date: string | null; created_at: string;
-  sales_reps: { name: string }[] | null;
+  customer_phone: string; status: string; committed_date: string | null; created_at: string;
+  sales_reps: { name: string } | null;
 };
 type TaskRow = {
   customer_name: string; invoice_number: string; amount: number;
   task_type: string; status: string; note: string | null;
   due_date: string | null; created_at: string;
-  sales_reps: { name: string }[] | null;
+  sales_reps: { name: string } | null;
 };
 
 export async function generateReportPdf(repId?: string): Promise<Buffer> {
@@ -248,7 +277,7 @@ export async function generateReportPdf(repId?: string): Promise<Buffer> {
 
   let cQuery = supabase
     .from('collection_commitments')
-    .select('customer_name, invoice_number, amount, status, committed_date, created_at, sales_reps(name)')
+    .select('customer_name, invoice_number, amount, customer_phone, status, committed_date, created_at, sales_reps(name)')
     .gte('created_at', since)
     .order('created_at', { ascending: false });
 
@@ -264,8 +293,21 @@ export async function generateReportPdf(repId?: string): Promise<Buffer> {
   }
 
   const [{ data: rawC }, { data: rawT }] = await Promise.all([cQuery, tQuery]);
-  const commitments = (rawC ?? []) as CommRow[];
-  const tasks = (rawT ?? []) as TaskRow[];
+  const commitments = (rawC ?? []) as unknown as CommRow[];
+  const tasks = (rawT ?? []) as unknown as TaskRow[];
+
+  // Fetch phones for tasks via their invoice numbers (rep_tasks has no phone column)
+  const taskInvoices = [...new Set(tasks.map(t => t.invoice_number))];
+  const phoneByInvoice = new Map<string, string>();
+  if (taskInvoices.length) {
+    const { data: phoneRows } = await supabase
+      .from('collection_commitments')
+      .select('invoice_number, customer_phone')
+      .in('invoice_number', taskInvoices);
+    for (const row of (phoneRows ?? []) as { invoice_number: string; customer_phone: string }[]) {
+      if (row.customer_phone) phoneByInvoice.set(row.invoice_number, row.customer_phone);
+    }
+  }
 
   const since30 = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
     .toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
@@ -297,8 +339,8 @@ export async function generateReportPdf(repId?: string): Promise<Buffer> {
         doc.fontSize(10).font('Helvetica-Bold').fillColor('#000000')
           .text(`${c.customer_name}  ·  ${c.invoice_number}`);
         doc.font('Helvetica').fillColor('#333333')
-          .text(`${fmtAED(c.amount)}  |  ${c.status.toUpperCase()}  |  Rep: ${c.sales_reps?.[0]?.name ?? '—'}`);
-        const extra: string[] = [`Created: ${fmtDate(c.created_at)}`];
+          .text(`${fmtAED(c.amount)}  |  ${c.status.toUpperCase()}  |  Rep: ${c.sales_reps?.name ?? '—'}`);
+        const extra: string[] = [`Phone: ${c.customer_phone || '—'}`, `Created: ${fmtDate(c.created_at)}`];
         if (c.committed_date) extra.push(`Committed: ${fmtDate(c.committed_date)}`);
         doc.text(extra.join('  |  '));
         doc.fillColor('#000000').moveDown(0.6);
@@ -318,14 +360,15 @@ export async function generateReportPdf(repId?: string): Promise<Buffer> {
         t === 'collection' ? 'Collect Cheque' : t === 'escalation' ? 'Escalation' : 'Follow Up';
 
       for (const t of tasks) {
+        const phone = phoneByInvoice.get(t.invoice_number) || '—';
         doc.fontSize(10).font('Helvetica-Bold').fillColor('#000000')
           .text(`${t.customer_name}  ·  ${t.invoice_number}`);
         doc.font('Helvetica').fillColor('#333333')
-          .text(`${fmtAED(t.amount)}  |  ${typeLabel(t.task_type)}  |  ${t.status.toUpperCase()}  |  Rep: ${t.sales_reps?.[0]?.name ?? '—'}`);
-        if (t.note) doc.text(`Note: ${t.note}`);
-        const extra: string[] = [`Created: ${fmtDate(t.created_at)}`];
+          .text(`${fmtAED(t.amount)}  |  ${typeLabel(t.task_type)}  |  ${t.status.toUpperCase()}  |  Rep: ${t.sales_reps?.name ?? '—'}`);
+        const extra: string[] = [`Phone: ${phone}`, `Created: ${fmtDate(t.created_at)}`];
         if (t.due_date) extra.push(`Due: ${fmtDate(t.due_date)}`);
         doc.text(extra.join('  |  '));
+        if (t.note) doc.text(`Note: ${t.note}`);
         doc.fillColor('#000000').moveDown(0.6);
       }
     }
@@ -341,6 +384,7 @@ export const ADMIN_HELP =
   `• \`list reps\` — Show all reps\n` +
   `• \`audit [N]\` — Last N requests (default 10)\n` +
   `• \`sync\` — Refresh Zoho customer list now\n` +
+  `• \`run dunning\` — Manually trigger a dunning run now\n` +
   `• \`tasks\` — View all open collection tasks (max 25)\n` +
   `• \`tasks of <name>\` — View tasks for a specific rep\n` +
   `• \`report\` — PDF: last 30 days commitments & tasks (available to all)\n\n` +

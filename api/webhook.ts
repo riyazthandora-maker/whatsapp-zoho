@@ -19,6 +19,7 @@ import {
   listReps,
   getRecentAudit,
   runSync,
+  triggerDunningRun,
   getAdminTasks,
   getAdminTasksForRep,
   addAllowedPhones,
@@ -47,6 +48,7 @@ import {
   getTaskList,
   setTaskList,
   getAllOpenTasks,
+  getOpenTasksByRepName,
   updateRepTask,
   normalizePhone,
 } from '../lib/dunning';
@@ -185,7 +187,11 @@ async function dispatch(phone: string, text: string, session: Session, rep: Sale
   // Task commands work for all roles — always show all open tasks
   const tasksOfMatch = text.trim().match(/^tasks\s+of\s+(.+)$/i);
   if (tasksOfMatch) {
-    return sendText(phone, await getAdminTasksForRep(tasksOfMatch[1].trim()));
+    const { tasks, repName } = await getOpenTasksByRepName(tasksOfMatch[1].trim());
+    if (!repName) return sendText(phone, `No active rep found matching *"${tasksOfMatch[1].trim()}"*.`);
+    if (!tasks.length) return sendText(phone, `No open tasks for *${repName}*. 🎉`);
+    await setTaskList(phone, tasks.map(t => t.id));
+    return sendText(phone, buildTaskList(tasks));
   }
 
   const taskCmd = parseTaskCommand(text);
@@ -238,7 +244,12 @@ async function handleAdminCommand(phone: string, cmd: ReturnType<typeof parseAdm
     case 'remove_rep': return sendText(phone, await removeRep(cmd.phone));
     case 'list_reps': return sendText(phone, await listReps());
     case 'audit':     return sendText(phone, await getRecentAudit(cmd.limit));
-    case 'tasks':        return sendText(phone, await getAdminTasks());
+    case 'tasks': {
+      const tasks = await getAllOpenTasks(25);
+      if (!tasks.length) return sendText(phone, 'No open tasks across all reps. 🎉');
+      await setTaskList(phone, tasks.map(t => t.id));
+      return sendText(phone, buildTaskList(tasks));
+    }
     case 'tasks_of':     return sendText(phone, await getAdminTasksForRep(cmd.name));
     case 'allow_phones': return sendText(phone, await addAllowedPhones(cmd.raw));
     case 'allow_all':    return sendText(phone, await setAllowAll());
@@ -248,6 +259,10 @@ async function handleAdminCommand(phone: string, cmd: ReturnType<typeof parseAdm
     case 'sync': {
       await sendText(phone, 'Syncing customers from Zoho...');
       return sendText(phone, await runSync());
+    }
+    case 'run_dunning': {
+      await sendText(phone, '⏳ Running dunning job...');
+      return sendText(phone, await triggerDunningRun());
     }
     case 'help': return sendText(phone, ADMIN_HELP);
   }
