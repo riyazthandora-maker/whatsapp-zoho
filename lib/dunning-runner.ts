@@ -212,68 +212,92 @@ export async function runDunningJob(): Promise<DunningRunResult> {
     errors.push(`overdue-fetch: ${err?.message}`);
   }
 
-  // Step 3: Follow-up (step 2, no reply in 24h)
+  // Step 3: Follow-up (step 2, no reply in 24h) — one message per customer
   try {
     const toFollow = await getCommitmentsForFollowup(2, 24);
+    const followByPhone = new Map<string, CommitmentRecord[]>();
     for (const c of toFollow) {
+      const list = followByPhone.get(c.customer_phone) ?? [];
+      list.push(c);
+      followByPhone.set(c.customer_phone, list);
+    }
+    for (const [phone, group] of followByPhone) {
       try {
-        await updateCommitment(c.id, {
-          template_step: 3,
-          template_sent_at: new Date().toISOString(),
-        });
-        await sendTemplate(c.customer_phone, 'payment_followup', 'en', [
-          c.customer_name,
-          c.invoice_number,
-          fmtAmount(c.amount),
+        const total = group.reduce((s, c) => s + c.amount, 0);
+        const invStr = invoiceList(group);
+        for (const c of group) {
+          await updateCommitment(c.id, {
+            template_step: 3,
+            template_sent_at: new Date().toISOString(),
+          });
+        }
+        await sendTemplate(phone, 'payment_followup', 'en', [
+          group[0].customer_name,
+          invStr,
+          fmtAmount(total),
           COMPANY(),
         ]);
-        preview.push(`[followup] ${c.customer_name} ${c.invoice_number} AED ${fmtAmount(c.amount)} → ${c.customer_phone}`);
+        preview.push(`[followup] ${group[0].customer_name} | ${invStr} | AED ${fmtAmount(total)} → ${phone}`);
         advanced++;
       } catch (err: any) {
-        errors.push(`followup/${c.invoice_number}: ${err?.message}`);
+        errors.push(`followup/${phone}: ${err?.message}`);
       }
     }
   } catch (err: any) {
     errors.push(`followup-fetch: ${err?.message}`);
   }
 
-  // Step 4: Final notice (step 3, no reply in 72h) + create rep task
+  // Step 4: Final notice (step 3, no reply in 72h) — one message + one task per customer
   try {
     const toFinalize = await getCommitmentsForFollowup(3, 72);
+    const finalByPhone = new Map<string, CommitmentRecord[]>();
     for (const c of toFinalize) {
+      const list = finalByPhone.get(c.customer_phone) ?? [];
+      list.push(c);
+      finalByPhone.set(c.customer_phone, list);
+    }
+    for (const [phone, group] of finalByPhone) {
       try {
+        const total = group.reduce((s, c) => s + c.amount, 0);
+        const invStr = invoiceList(group);
+        const oldest = group.reduce((a, b) =>
+          (a.template_sent_at ?? a.created_at) < (b.template_sent_at ?? b.created_at) ? a : b
+        );
         const daysOverdue = Math.floor(
-          (Date.now() - new Date(c.template_sent_at ?? c.created_at).getTime()) / 86_400_000
+          (Date.now() - new Date(oldest.template_sent_at ?? oldest.created_at).getTime()) / 86_400_000
         );
         const taskDueDate = new Date();
         taskDueDate.setDate(taskDueDate.getDate() + 1);
 
-        await updateCommitment(c.id, {
-          template_step: 4,
-          template_sent_at: new Date().toISOString(),
-          status: 'escalated',
-        });
+        for (const c of group) {
+          await updateCommitment(c.id, {
+            template_step: 4,
+            template_sent_at: new Date().toISOString(),
+            status: 'escalated',
+          });
+        }
+        const allInvoices = group.map(c => c.invoice_number).join(', ');
         await createRepTask({
-          rep_id: c.assigned_rep_id,
-          customer_zoho_id: c.customer_zoho_id,
-          customer_name: c.customer_name,
-          invoice_number: c.invoice_number,
-          amount: c.amount,
+          rep_id: group[0].assigned_rep_id,
+          customer_zoho_id: group[0].customer_zoho_id,
+          customer_name: group[0].customer_name,
+          invoice_number: group[0].invoice_number,
+          amount: total,
           task_type: 'escalation',
           due_date: taskDueDate.toISOString().split('T')[0],
-          note: `No response after 3 WhatsApp messages (${daysOverdue}d overdue)`,
+          note: `No response after 3 WhatsApp messages (${daysOverdue}d overdue)${group.length > 1 ? ` | Invoices: ${allInvoices}` : ''}`,
         });
-        await sendTemplate(c.customer_phone, 'payment_final_notice', 'en', [
-          c.customer_name,
-          c.invoice_number,
-          fmtAmount(c.amount),
+        await sendTemplate(phone, 'payment_final_notice', 'en', [
+          group[0].customer_name,
+          invStr,
+          fmtAmount(total),
           String(daysOverdue),
           COMPANY(),
         ]);
-        preview.push(`[final] ${c.customer_name} ${c.invoice_number} AED ${fmtAmount(c.amount)} (${daysOverdue}d overdue) → ${c.customer_phone}`);
+        preview.push(`[final] ${group[0].customer_name} | ${invStr} | AED ${fmtAmount(total)} (${daysOverdue}d overdue) → ${phone}`);
         finalized++;
       } catch (err: any) {
-        errors.push(`final/${c.invoice_number}: ${err?.message}`);
+        errors.push(`final/${phone}: ${err?.message}`);
       }
     }
   } catch (err: any) {
